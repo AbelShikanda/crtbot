@@ -1833,7 +1833,7 @@ void DrawPullbackMarker(double current_price, ENUM_TREND_DIRECTION trend, double
 //+------------------------------------------------------------------+
 
 //+------------------------------------------------------------------+
-//| Initialize Profit Tracker                                        |
+//| Initialize Profit Tracker - FIXED with retry logic              |
 //+------------------------------------------------------------------+
 void InitializeProfitTracker(ulong posTicket)
 {
@@ -1856,18 +1856,40 @@ void InitializeProfitTracker(ulong posTicket)
       trackerCount++;
    }
    
-   if(PositionSelectByTicket(posTicket))
-   {
-      profitTrackers[index].posTicket = posTicket;
-      profitTrackers[index].entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-      profitTrackers[index].tpPrice = PositionGetDouble(POSITION_TP);
-      profitTrackers[index].posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-   }
-   
+   // Store position ticket
+   profitTrackers[index].posTicket = posTicket;
    profitTrackers[index].highestPercentSeen = 0;
    profitTrackers[index].breakevenProcessed = false;
    profitTrackers[index].sl20PercentProcessed = false;
    profitTrackers[index].sl50PercentProcessed = false;
+   
+   // Try multiple times to get position data
+   bool dataFound = false;
+   for(int attempt = 0; attempt < 10; attempt++)
+   {
+      if(PositionSelectByTicket(posTicket))
+      {
+         profitTrackers[index].entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+         profitTrackers[index].tpPrice = PositionGetDouble(POSITION_TP);
+         profitTrackers[index].posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+         dataFound = true;
+         break;
+      }
+      Sleep(10);
+   }
+   
+   if(!dataFound)
+   {
+      // Remove the empty tracker slot
+      if(index == trackerCount - 1)
+         trackerCount--;
+      else
+      {
+         for(int i = index; i < trackerCount - 1; i++)
+            profitTrackers[i] = profitTrackers[i + 1];
+         trackerCount--;
+      }
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -1900,7 +1922,7 @@ void CleanupProfitTrackers()
 }
 
 //+------------------------------------------------------------------+
-//| Calculate Percent to Target Profit                               |
+//| Calculate Percent to Target Profit - FIXED for BOTH BUY/SELL   |
 //+------------------------------------------------------------------+
 double CalculatePercentToTP(ulong posTicket, double &targetProfit)
 {
@@ -1921,7 +1943,9 @@ double CalculatePercentToTP(ulong posTicket, double &targetProfit)
    if(tickSize <= 0 || tickValue <= 0)
       return 0;
    
-   targetProfit = ((tp - entry) / tickSize) * tickValue * volume;
+   // FIXED: Use ABSOLUTE value for distance (works for both BUY and SELL)
+   double distance = MathAbs(tp - entry);
+   targetProfit = (distance / tickSize) * tickValue * volume;
    
    if(targetProfit <= 0)
       return 0;
@@ -1931,7 +1955,7 @@ double CalculatePercentToTP(ulong posTicket, double &targetProfit)
 }
 
 //+------------------------------------------------------------------+
-//| Move Stop Loss to Breakeven (FIXED)                              |
+//| Move Stop Loss to Breakeven (FIXED for BOTH BUY and SELL)       |
 //+------------------------------------------------------------------+
 bool MoveToBreakeven(ulong posTicket, double entryPrice, double tpPrice)
 {
@@ -1944,6 +1968,7 @@ bool MoveToBreakeven(ulong posTicket, double entryPrice, double tpPrice)
    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    double buffer = Breakeven_Buffer_Points * point;
    
+   // Check if SL is already at breakeven or better
    if(posType == POSITION_TYPE_BUY)
    {
       if(currentSL >= entryPrice + buffer)
@@ -1965,8 +1990,10 @@ bool MoveToBreakeven(ulong posTicket, double entryPrice, double tpPrice)
    
    newSL = NormalizeDouble(newSL, _Digits);
    
+   //--- Verify the new SL is valid
    if(posType == POSITION_TYPE_BUY)
    {
+      // BUY: New SL must be HIGHER than current SL (moving SL up)
       if(newSL <= currentSL)
          return false;
       double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
@@ -1975,6 +2002,7 @@ bool MoveToBreakeven(ulong posTicket, double entryPrice, double tpPrice)
    }
    else if(posType == POSITION_TYPE_SELL)
    {
+      // SELL: New SL must be LOWER than current SL (moving SL down)
       if(newSL >= currentSL)
          return false;
       double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
@@ -2001,7 +2029,7 @@ bool MoveToBreakeven(ulong posTicket, double entryPrice, double tpPrice)
 }
 
 //+------------------------------------------------------------------+
-//| Move Stop Loss to Percentage of Target Profit (FIXED)           |
+//| Move Stop Loss to Percentage of Target Profit (FIXED for BOTH)  |
 //+------------------------------------------------------------------+
 bool MoveSLToProfitPercent(ulong posTicket, double entryPrice, double tpPrice, double percentProfit)
 {
@@ -2020,17 +2048,23 @@ bool MoveSLToProfitPercent(ulong posTicket, double entryPrice, double tpPrice, d
    
    if(posType == POSITION_TYPE_BUY)
    {
+      // BUY: Move SL UP
       newSL = entryPrice + profitDistance;
+      // New SL must be HIGHER than current SL
       if(newSL <= currentSL + point)
          return false;
+      // New SL must be BELOW current price
       if(newSL >= currentPrice - point * 10)
          return false;
    }
    else if(posType == POSITION_TYPE_SELL)
    {
+      // SELL: Move SL DOWN
       newSL = entryPrice - profitDistance;
+      // New SL must be LOWER than current SL
       if(newSL >= currentSL - point)
          return false;
+      // New SL must be ABOVE current price
       if(newSL <= currentPrice + point * 10)
          return false;
    }
