@@ -2,6 +2,7 @@
 //|                                 Range_Pullback_DayTrader.mq5     |
 //|                                   Day Trading - M15/H1          |
 //|                    WITH INBUILT MTF SYSTEM                       |
+//|                    OPTIMIZED FOR SELL TRADES                     |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
 #property link      ""
@@ -23,9 +24,30 @@ input int      Slippage           = 10;          // Slippage in points
 input double   MinRR              = 1.0;         // Minimum Risk/Reward Ratio
 input double   Target_RR          = 2.0;         // Target RR for TP-based SL
 
+//--- Pullback Ranges (Separate for BUY and SELL)
+input double   Buy_Pullback_Min   = 0.25;        // BUY: Minimum pullback (25%)
+input double   Buy_Pullback_Max   = 0.85;        // BUY: Maximum pullback (85%)
+input double   Sell_Pullback_Min  = 0.30;        // SELL: Minimum pullback (30%)
+input double   Sell_Pullback_Max  = 0.85;        // SELL: Maximum pullback (85%)
+
 //--- Confidence Thresholds (Separate for BUY and SELL)
 input int      Buy_Confidence_Threshold  = 70;   // Minimum confidence for BUY (0-100)
-input int      Sell_Confidence_Threshold = 60;   // Minimum confidence for SELL (0-100)
+input int      Sell_Confidence_Threshold = 55;   // Minimum confidence for SELL (0-100)
+
+//--- SELL Optimization Parameters - CORRECTED
+input bool     Enable_Sell_Optimization  = true; // Enable SELL-specific optimizations
+input int      Sell_Confidence_Min       = 55;   // SELL: Minimum confidence (sweet spot)
+input int      Sell_Confidence_Max       = 65;   // SELL: Maximum confidence (cap)
+
+// CORRECTED: MTF range on 0-40 scale (19/40 = 47.5%)
+input int      Sell_MTF_Score_Min        = 19;   // SELL: Minimum MTF score (47.5% of 40)
+input int      Sell_MTF_Score_Max        = 26;   // SELL: Maximum MTF score (65% of 40)
+
+input int      Sell_ADX_Score_Min        = 20;   // SELL: Minimum ADX (0-100)
+input int      Sell_ADX_Score_Max        = 50;   // SELL: Maximum ADX (0-100)
+
+input double   Sell_Volume_Ratio_Min     = 0.5;  // SELL: Minimum volume ratio
+input double   Sell_Volume_Ratio_Max     = 3.0;  // SELL: Maximum volume ratio
 
 //--- Volume & Pattern Confirmations
 input bool     Enable_Volume_Filter = true;      // Enable volume confirmation
@@ -156,7 +178,7 @@ void DetectRange(MqlRates &rates[]);
 void ExecuteTrade(ENUM_TREND_DIRECTION trend, double entry_price, double sl_price, double tp_price,
                   int total_confidence, int pullback_score, int mtf_score, int adx_score,
                   int vol_score, int pat_score,
-                  string pullback_desc, string mtf_desc, string adx_desc, 
+                  string pullback_desc, string mtf_desc, 
                   string volume_desc, string pattern_desc, string price_pos_desc,
                   bool is_rejected = false, string reject_reason = "");
 void InitializeProfitTracker(ulong posTicket);
@@ -180,6 +202,29 @@ int CalculateUnifiedMTFScore(ENUM_TREND_DIRECTION tradeDirection,
 string GetPullbackZoneDescription(double pullback_percent);
 
 //+------------------------------------------------------------------+
+//| Get Pullback Min/Max based on direction                          |
+//+------------------------------------------------------------------+
+double GetPullbackMin(ENUM_TREND_DIRECTION direction)
+{
+   if(direction == TREND_UP)
+      return Buy_Pullback_Min;
+   else if(direction == TREND_DOWN)
+      return Sell_Pullback_Min;
+   else
+      return 0.25; // Default fallback
+}
+
+double GetPullbackMax(ENUM_TREND_DIRECTION direction)
+{
+   if(direction == TREND_UP)
+      return Buy_Pullback_Max;
+   else if(direction == TREND_DOWN)
+      return Sell_Pullback_Max;
+   else
+      return 0.85; // Default fallback
+}
+
+//+------------------------------------------------------------------+
 //| Get Confidence Threshold based on direction                      |
 //+------------------------------------------------------------------+
 int GetConfidenceThreshold(ENUM_TREND_DIRECTION direction)
@@ -190,6 +235,43 @@ int GetConfidenceThreshold(ENUM_TREND_DIRECTION direction)
       return Sell_Confidence_Threshold;
    else
       return 70; // Default fallback
+}
+
+//+------------------------------------------------------------------+
+//| Check if SELL Confidence is in Optimal Range                     |
+//+------------------------------------------------------------------+
+bool IsSellConfidenceOptimal(int confidence)
+{
+   if(!Enable_Sell_Optimization) return true;
+   return (confidence >= Sell_Confidence_Min && confidence <= Sell_Confidence_Max);
+}
+
+//+------------------------------------------------------------------+
+//| Check if SELL MTF Score is in Optimal Range                      |
+//+------------------------------------------------------------------+
+bool IsSellMTFOptimal(int mtfScore)
+{
+   if(!Enable_Sell_Optimization) return true;
+   // mtfScore is 0-40, 19/40 = 47.5%
+   return (mtfScore >= Sell_MTF_Score_Min && mtfScore <= Sell_MTF_Score_Max);
+}
+
+//+------------------------------------------------------------------+
+//| Check if SELL ADX is in Optimal Range                            |
+//+------------------------------------------------------------------+
+bool IsSellADXOptimal(double adx)
+{
+   if(!Enable_Sell_Optimization) return true;
+   return (adx >= Sell_ADX_Score_Min && adx <= Sell_ADX_Score_Max);
+}
+
+//+------------------------------------------------------------------+
+//| Check if SELL Volume is in Optimal Range                         |
+//+------------------------------------------------------------------+
+bool IsSellVolumeOptimal(double volumeRatio)
+{
+   if(!Enable_Sell_Optimization) return true;
+   return (volumeRatio >= Sell_Volume_Ratio_Min && volumeRatio <= Sell_Volume_Ratio_Max);
 }
 
 //+------------------------------------------------------------------+
@@ -258,11 +340,11 @@ void DrawTradeMarker(double price, ENUM_TREND_DIRECTION direction, string label,
 //+------------------------------------------------------------------+
 void StoreFailedTrade(double price, ENUM_TREND_DIRECTION direction, string reason, 
                       int confidence, double pullback_pct,
-                      string pattern_desc = "")
+                      double adx_value = 0, double volume_ratio_val = 0)
 {
-   // Signature: C:xx% | MTF:xx% | PB:xx% | PAT:xxxx
-   string signature = StringFormat("C:%d%% | MTF:%d%% | PB:%.0f%% | PAT:%s",
-                                   confidence, mtf_total_score, pullback_pct, pattern_desc);
+   // Signature: C:xx% | MTF:xx% | PB:xx% | ADX:xx | VOL:xx
+   string signature = StringFormat("C:%d%% | MTF:%d%% | PB:%.0f%% | ADX:%.1f | VOL:%.1fx",
+                                   confidence, mtf_total_score, pullback_pct, adx_value, volume_ratio_val);
    string label = signature;
    DrawTradeMarker(price, direction, label, true);
 }
@@ -272,11 +354,11 @@ void StoreFailedTrade(double price, ENUM_TREND_DIRECTION direction, string reaso
 //+------------------------------------------------------------------+
 void StoreSuccessfulTrade(double price, ENUM_TREND_DIRECTION direction, 
                           int confidence, double pullback_pct,
-                          string pattern_desc = "")
+                          double adx_value = 0, double volume_ratio_val = 0)
 {
-   // Signature: C:xx% | MTF:xx% | PB:xx% | PAT:xxxx
-   string signature = StringFormat("C:%d%% | MTF:%d%% | PB:%.0f%% | PAT:%s",
-                                   confidence, mtf_total_score, pullback_pct, pattern_desc);
+   // Signature: C:xx% | MTF:xx% | PB:xx% | ADX:xx | VOL:xx
+   string signature = StringFormat("C:%d%% | MTF:%d%% | PB:%.0f%% | ADX:%.1f | VOL:%.1fx",
+                                   confidence, mtf_total_score, pullback_pct, adx_value, volume_ratio_val);
    string label = signature + " ✅";
    DrawTradeMarker(price, direction, label, false);
 }
@@ -317,6 +399,7 @@ int OnInit()
    LogMessage("=========================================");
    LogMessage("   DAY TRADING RANGE PULLBACK EXECUTOR   ");
    LogMessage("   WITH INBUILT MTF SYSTEM               ");
+   LogMessage("   OPTIMIZED FOR SELL TRADES             ");
    LogMessage("=========================================");
    LogMessage("Entry Timeframe: M15 (15-minute candles)");
    LogMessage("Trend Timeframe: H1 (1-hour candles)");
@@ -326,8 +409,20 @@ int OnInit()
    LogMessage("Range Period: " + IntegerToString(Range_Period) + " bars = 15 hours");
    LogMessage("Max Daily Trades: " + IntegerToString(Max_Daily_Trades));
    LogMessage("Fixed Lot Size: 0.01");
+   LogMessage("BUY Pullback Range: " + DoubleToString(Buy_Pullback_Min * 100, 0) + "-" + DoubleToString(Buy_Pullback_Max * 100, 0) + "%");
+   LogMessage("SELL Pullback Range: " + DoubleToString(Sell_Pullback_Min * 100, 0) + "-" + DoubleToString(Sell_Pullback_Max * 100, 0) + "%");
    LogMessage("BUY Confidence Threshold: " + IntegerToString(Buy_Confidence_Threshold) + "%");
    LogMessage("SELL Confidence Threshold: " + IntegerToString(Sell_Confidence_Threshold) + "%");
+   LogMessage("SELL Optimization: " + (Enable_Sell_Optimization ? "ON" : "OFF"));
+   if(Enable_Sell_Optimization)
+   {
+      LogMessage("  SELL Confidence Range: " + IntegerToString(Sell_Confidence_Min) + "-" + IntegerToString(Sell_Confidence_Max) + "%");
+      LogMessage("  SELL MTF Range: " + IntegerToString(Sell_MTF_Score_Min) + "-" + IntegerToString(Sell_MTF_Score_Max) + "/40");
+      LogMessage("  SELL ADX Range: " + IntegerToString(Sell_ADX_Score_Min) + "-" + IntegerToString(Sell_ADX_Score_Max));
+      LogMessage("  SELL Volume Range: " + DoubleToString(Sell_Volume_Ratio_Min, 1) + "-" + DoubleToString(Sell_Volume_Ratio_Max, 1) + "x");
+      LogMessage("  SELL Requires 2+ Optimal Factors (Confidence + MTF + ADX or Volume)");
+      LogMessage("  SELL Target: 95% of TP (not full TP)");
+   }
    LogMessage("MTF System: H1 (50%) + M15 (30%) + D1 (20%) = 40 points");
    LogMessage("Volume Filter: " + (Enable_Volume_Filter ? "ON" : "OFF"));
    LogMessage("Pattern Filter: " + (Enable_Pattern_Filter ? "ON" : "OFF"));
@@ -1145,53 +1240,49 @@ int CalculateADXScore(double adx_main, double adx_plus, double adx_minus, ENUM_T
 }
 
 //+------------------------------------------------------------------+
-//| Calculate Volume Score                                           |
+//| Calculate Volume Score - FIXED using iVolume                     |
 //+------------------------------------------------------------------+
-int CalculateVolumeScore(MqlRates &rates[], int period, double &ratio)
+int CalculateVolumeScore(int period, double &ratio)
 {
-    if(ArraySize(rates) < period + 1) 
-    {
-        ratio = 1.0;
-        return 4;
-    }
-    
-    double avg_volume = 0;
-    int count = 0;
-    for(int i = 1; i <= period && i < ArraySize(rates); i++)
-    {
-        long vol = rates[i].tick_volume;
-        
-        if(vol > 0)
-        {
-            avg_volume += (double)vol;
-            count++;
-        }
-    }
-    
-    if(count == 0 || avg_volume == 0)
-    {
-        ratio = 1.0;
-        return 4;
-    }
-    
-    avg_volume /= count;
-    
-    long current_vol = rates[0].tick_volume;
-    
-    if(current_vol == 0)
-    {
-        ratio = 1.0;
-        return 4;
-    }
-    
-    ratio = (double)current_vol / avg_volume;
-    
-    if(ratio >= 2.5) return 15;
-    if(ratio >= 1.8) return 13;
-    if(ratio >= 1.4) return 10;
-    if(ratio >= 1.1) return 7;
-    if(ratio >= 0.8) return 4;
-    return 0;
+   // Get current volume
+   long current_vol = iVolume(_Symbol, Entry_Timeframe, 0);
+   
+   if(current_vol <= 0)
+   {
+      ratio = 1.0;
+      return 4;  // Default score when no volume data
+   }
+   
+   // Calculate average volume
+   double avg_volume = 0;
+   int count = 0;
+   
+   for(int i = 1; i <= period; i++)
+   {
+      long vol = iVolume(_Symbol, Entry_Timeframe, i);
+      if(vol > 0)
+      {
+         avg_volume += (double)vol;
+         count++;
+      }
+   }
+   
+   if(count == 0 || avg_volume == 0)
+   {
+      ratio = 1.0;
+      return 4;
+   }
+   
+   avg_volume /= count;
+   ratio = (double)current_vol / avg_volume;
+   
+   // Score based on volume ratio
+   if(ratio >= 2.5) return 15;
+   if(ratio >= 1.8) return 13;
+   if(ratio >= 1.4) return 10;
+   if(ratio >= 1.1) return 7;
+   if(ratio >= 0.8) return 4;
+   return 0;
 }
 
 //+------------------------------------------------------------------+
@@ -1315,44 +1406,6 @@ string GetPatternDescription(MqlRates &rates[], ENUM_TREND_DIRECTION trend)
 }
 
 //+------------------------------------------------------------------+
-//| Get ADX Description                                              |
-//+------------------------------------------------------------------+
-string GetADXDescription(double adx_main, double adx_plus, double adx_minus, ENUM_TREND_DIRECTION trend)
-{
-   string result = "";
-   
-   if(adx_main >= 50)
-      result = "LEVEL 5: EXTREME TREND";
-   else if(adx_main >= 40)
-      result = "LEVEL 4: STRONG TREND";
-   else if(adx_main >= 30)
-      result = "LEVEL 3: GOOD TREND";
-   else if(adx_main >= 25)
-      result = "LEVEL 2: MODERATE TREND";
-   else if(adx_main >= 20)
-      result = "LEVEL 1: WEAK TREND";
-   else
-      result = "LEVEL 0: NO TREND";
-   
-   if(trend == TREND_UP)
-   {
-      if(adx_plus > adx_minus)
-         result += " | +DI > -DI ✅";
-      else
-         result += " | +DI < -DI ⚠️";
-   }
-   else if(trend == TREND_DOWN)
-   {
-      if(adx_minus > adx_plus)
-         result += " | -DI > +DI ✅";
-      else
-         result += " | -DI < +DI ⚠️";
-   }
-   
-   return result;
-}
-
-//+------------------------------------------------------------------+
 //| Get ADX Level Label                                              |
 //+------------------------------------------------------------------+
 string GetADXLevelLabel(double adx_main)
@@ -1439,7 +1492,7 @@ double CalculateLotSize()
 void ExecuteTrade(ENUM_TREND_DIRECTION trend, double entry_price, double sl_price, double tp_price,
                   int total_confidence, int pullback_score, int mtf_score, int adx_score,
                   int vol_score, int pat_score,
-                  string pullback_desc, string mtf_desc, string adx_desc, 
+                  string pullback_desc, string mtf_desc, 
                   string volume_desc, string pattern_desc, string price_pos_desc,
                   bool is_rejected = false, string reject_reason = "")
 {
@@ -1449,11 +1502,15 @@ void ExecuteTrade(ENUM_TREND_DIRECTION trend, double entry_price, double sl_pric
    
    // Store MTF score for signature (convert to percentage)
    mtf_total_score = (int)((double)mtf_score / 40.0 * 100);
-   string pattern_short = pattern_desc;
+   
+   // Get current ADX and Volume values for the signature
+   double current_adx = adx_score;  // Use the ADX score value
+   double current_volume_ratio = volume_ratio;  // Use the global volume_ratio
    
    if(is_rejected)
    {
-      StoreFailedTrade(entry_price, trend, reject_reason, total_confidence, pb_pct, pattern_short);
+      StoreFailedTrade(entry_price, trend, reject_reason, total_confidence, pb_pct, 
+                       current_adx, current_volume_ratio);
       return;
    }
    
@@ -1474,7 +1531,8 @@ void ExecuteTrade(ENUM_TREND_DIRECTION trend, double entry_price, double sl_pric
    {
       status_reason = "MAX POSITIONS REACHED";
       status_progress = "LIMIT";
-      StoreFailedTrade(entry_price, trend, "Max Positions", total_confidence, pb_pct, pattern_short);
+      StoreFailedTrade(entry_price, trend, "Max Positions", total_confidence, pb_pct,
+                       current_adx, current_volume_ratio);
       return;
    }
    
@@ -1482,7 +1540,8 @@ void ExecuteTrade(ENUM_TREND_DIRECTION trend, double entry_price, double sl_pric
    {
       status_reason = "DAILY LIMIT REACHED";
       status_progress = "LIMIT";
-      StoreFailedTrade(entry_price, trend, "Daily Limit", total_confidence, pb_pct, pattern_short);
+      StoreFailedTrade(entry_price, trend, "Daily Limit", total_confidence, pb_pct,
+                       current_adx, current_volume_ratio);
       return;
    }
    
@@ -1494,7 +1553,8 @@ void ExecuteTrade(ENUM_TREND_DIRECTION trend, double entry_price, double sl_pric
    {
       status_reason = "RR TOO LOW (" + DoubleToString(rr_ratio, 2) + ")";
       status_progress = "REJECTED: RR";
-      StoreFailedTrade(entry_price, trend, "RR " + DoubleToString(rr_ratio, 2), total_confidence, pb_pct, pattern_short);
+      StoreFailedTrade(entry_price, trend, "RR " + DoubleToString(rr_ratio, 2), total_confidence, pb_pct,
+                       current_adx, current_volume_ratio);
       return;
    }
    
@@ -1533,7 +1593,8 @@ void ExecuteTrade(ENUM_TREND_DIRECTION trend, double entry_price, double sl_pric
       
       daily_trades++;
       
-      StoreSuccessfulTrade(price, trend, total_confidence, pb_pct, pattern_short);
+      StoreSuccessfulTrade(price, trend, total_confidence, pb_pct,
+                           current_adx, current_volume_ratio);
       
       InitializeProfitTracker(positionTicket);
       ObjectsDeleteAll(0, "Pullback_");
@@ -1581,7 +1642,7 @@ void ExecuteTrade(ENUM_TREND_DIRECTION trend, double entry_price, double sl_pric
       LogMessage("--- 📊 Confidence Score: " + IntegerToString(total_confidence) + "/100 (" + confidence_label + ") ---");
       LogMessage("📈 Pullback Score: " + IntegerToString(pullback_score) + "/30 - " + pullback_desc);
       LogMessage("📊 MTF Score: " + IntegerToString(mtf_score) + "/40 - " + mtf_desc);
-      LogMessage("📉 ADX Score: " + IntegerToString(adx_score) + "/15 - " + adx_desc);
+      LogMessage("📉 ADX Score: " + IntegerToString(adx_score) + "/15");
       LogMessage("📊 Volume Score: " + IntegerToString(vol_score) + "/10 - " + volume_desc);
       LogMessage("📐 Pattern Score: " + IntegerToString(pat_score) + "/5 - " + pattern_desc);
       LogMessage("=========================================");
@@ -1659,26 +1720,31 @@ void DetectPullbackAndExecute(MqlRates &rates[], MqlRates &rates_h1[], MqlRates 
    int adx_score = 0;
    int total_confidence = 0;
    
-   //--- Bullish: 25-85% pullback
+   //--- Get pullback ranges based on direction
+   double pullback_min = GetPullbackMin(final_trend);
+   double pullback_max = GetPullbackMax(final_trend);
+   
+   //--- Bullish: Pullback detection using BUY range (TP at swing high)
    if(final_trend == TREND_UP && current_price < swing_high)
    {
       pullback_percent = (swing_high - current_price) / (swing_high - swing_low);
-      if(pullback_percent >= 0.25 && pullback_percent <= 0.85)
+      if(pullback_percent >= pullback_min && pullback_percent <= pullback_max)
       {
          is_pullback = true;
          entry_price = current_price;
-         tp_price = swing_high;
+         tp_price = swing_high;  // BUY: Full TP at swing high
       }
    }
-   //--- Bearish: 35-85% pullback
+   //--- Bearish: Pullback detection using SELL range (TP at 95% of swing low)
    else if(final_trend == TREND_DOWN && current_price > swing_low)
    {
       pullback_percent = (current_price - swing_low) / (swing_high - swing_low);
-      if(pullback_percent >= 0.35 && pullback_percent <= 0.85)
+      if(pullback_percent >= pullback_min && pullback_percent <= pullback_max)
       {
          is_pullback = true;
          entry_price = current_price;
-         tp_price = swing_low;
+         // SELL: Target at 95% of the swing low (not full TP)
+         tp_price = swing_low + (swing_high - swing_low) * 0.05;
       }
    }
    
@@ -1693,8 +1759,8 @@ void DetectPullbackAndExecute(MqlRates &rates[], MqlRates &rates_h1[], MqlRates 
       adx_score = CalculateADXScore(current_adx, current_adx_plus, current_adx_minus, final_trend);
       
       double vol_ratio = 0;
-      volume_score = CalculateVolumeScore(rates, Volume_Period, vol_ratio);
-      volume_ratio = vol_ratio;
+      volume_score = CalculateVolumeScore(Volume_Period, vol_ratio);
+      volume_ratio = vol_ratio;  // Sets the global variable
       pattern_score = CalculatePatternScore(rates, final_trend);
       
       //--- STEP 4 + 5: MTF Score (0-40) - INBUILT SYSTEM
@@ -1725,7 +1791,6 @@ void DetectPullbackAndExecute(MqlRates &rates[], MqlRates &rates_h1[], MqlRates 
       status_pattern = GetPatternDescription(rates, final_trend);
       
       string pullback_desc = GetPullbackDescription(pb_pct);
-      string adx_desc = GetADXDescription(current_adx, current_adx_plus, current_adx_minus, final_trend);
       string adx_level = GetADXLevelLabel(current_adx);
       
       double diff_fast = (current_price - current_ma_fast) / current_ma_fast * 100;
@@ -1747,7 +1812,7 @@ void DetectPullbackAndExecute(MqlRates &rates[], MqlRates &rates_h1[], MqlRates 
             ExecuteTrade(final_trend, entry_price, 0, tp_price, total_confidence, 
                          pullback_score, mtf_score, adx_score,
                          volume_score, pattern_score,
-                         pullback_desc, mtf_desc, adx_desc, 
+                         pullback_desc, mtf_desc, 
                          GetVolumeDescription(volume_ratio), 
                          GetPatternDescription(rates, final_trend), 
                          price_pos_desc, true, "Low Volume");
@@ -1755,46 +1820,95 @@ void DetectPullbackAndExecute(MqlRates &rates[], MqlRates &rates_h1[], MqlRates 
          }
       }
       
-      //--- STEP 7: BINARY TRADE DECISION (Confidence >= threshold)
-      if(total_confidence >= threshold)
+      //--- STEP 7: ENHANCED TRADE DECISION
+      //--- BUY: Simple threshold (proven to work)
+      if(final_trend == TREND_UP)
       {
-         status_reason = "CONFIDENCE MET ✅ - ENTERING";
-         status_progress = "ENTERING " + (final_trend == TREND_UP ? "BUY" : "SELL");
-         
-         LogMessage("✅ CONFIDENCE MET - ENTERING TRADE");
-         LogMessage("Total Confidence: " + IntegerToString(total_confidence) + "/100");
-         LogMessage("Direction: " + (final_trend == TREND_UP ? "BUY" : "SELL"));
-         LogMessage("Threshold: " + IntegerToString(threshold) + "%");
-         LogMessage("MTF Score: " + IntegerToString(mtf_score) + "/40");
-         LogMessage("MTF Details: " + mtf_desc);
-         
-         sl_price = CalculateOptimalSL(final_trend, entry_price, tp_price, current_ma_fast, current_atr, Target_RR, rates);
-         
-         ExecuteTrade(final_trend, entry_price, sl_price, tp_price, total_confidence, 
-                      pullback_score, mtf_score, adx_score,
-                      volume_score, pattern_score,
-                      pullback_desc, mtf_desc, adx_desc, 
-                      GetVolumeDescription(volume_ratio), 
-                      GetPatternDescription(rates, final_trend), 
-                      price_pos_desc);
+         if(total_confidence >= threshold)
+         {
+            status_reason = "BUY CONFIDENCE MET ✅ - ENTERING";
+            status_progress = "ENTERING BUY";
+            
+            LogMessage("✅ BUY - CONFIDENCE MET");
+            LogMessage("Total Confidence: " + IntegerToString(total_confidence) + "/100");
+            LogMessage("Threshold: " + IntegerToString(threshold) + "%");
+            LogMessage("MTF Score: " + IntegerToString(mtf_score) + "/40");
+            LogMessage("MTF Details: " + mtf_desc);
+            
+            sl_price = CalculateOptimalSL(final_trend, entry_price, tp_price, current_ma_fast, current_atr, Target_RR, rates);
+            
+            ExecuteTrade(final_trend, entry_price, sl_price, tp_price, total_confidence, 
+                         pullback_score, mtf_score, adx_score,
+                         volume_score, pattern_score,
+                         pullback_desc, mtf_desc, 
+                         GetVolumeDescription(volume_ratio), 
+                         GetPatternDescription(rates, final_trend), 
+                         price_pos_desc);
+         }
+         else
+         {
+            status_reason = "LOW BUY CONFIDENCE (" + IntegerToString(total_confidence) + "/" + IntegerToString(threshold) + ")";
+            status_progress = "WAITING: BUY CONFIDENCE";
+            
+            LogMessage("⏳ BUY - WAITING FOR CONFIDENCE");
+            LogMessage("Total Confidence: " + IntegerToString(total_confidence) + "/100");
+            LogMessage("Threshold: " + IntegerToString(threshold) + "%");
+         }
       }
-      else
+      //--- SELL: Multi-factor optimization (2-4 factors required)
+      else if(final_trend == TREND_DOWN)
       {
-         status_reason = "LOW CONFIDENCE (" + IntegerToString(total_confidence) + "/" + IntegerToString(threshold) + ")";
-         status_progress = "WAITING: CONFIDENCE";
+         bool confidenceOptimal = IsSellConfidenceOptimal(total_confidence);
+         bool mtfOptimal = IsSellMTFOptimal(mtf_score);
+         bool adxOptimal = IsSellADXOptimal(current_adx);
+         bool volumeOptimal = IsSellVolumeOptimal(volume_ratio);
          
-         LogMessage("=== 📊 PULLBACK DETECTED - WAITING FOR CONFIDENCE ===");
-         LogMessage("Pullback: " + DoubleToString(pb_pct, 1) + "% (" + pullback_zone + ")");
-         LogMessage("Direction: " + (final_trend == TREND_UP ? "BUY" : "SELL"));
-         LogMessage("Threshold: " + IntegerToString(threshold) + "%");
-         LogMessage("Pullback Score: " + IntegerToString(pullback_score) + "/30");
-         LogMessage("MTF Score: " + IntegerToString(mtf_score) + "/40");
-         LogMessage("MTF Details: " + mtf_desc);
-         LogMessage("ADX Score: " + IntegerToString(adx_score) + "/15 (" + adx_level + ")");
-         LogMessage("Volume Score: " + IntegerToString(volume_score) + "/10 (" + GetVolumeDescription(volume_ratio) + ")");
-         LogMessage("Pattern Score: " + IntegerToString(pattern_score) + "/5 (" + GetPatternDescription(rates, final_trend) + ")");
-         LogMessage("Total Confidence: " + IntegerToString(total_confidence) + "/100");
-         LogMessage("Status: " + (total_confidence < threshold ? "❌ BELOW THRESHOLD" : "✅ ABOVE THRESHOLD"));
+         //--- Calculate optimal factors count
+         int optimalCount = 0;
+         if(confidenceOptimal) optimalCount++;
+         if(mtfOptimal) optimalCount++;
+         if(adxOptimal) optimalCount++;
+         if(volumeOptimal) optimalCount++;
+         
+         //--- SELL Decision Logic: 2-4 factors required (Confidence must be optimal)
+         if(optimalCount >= 2 && confidenceOptimal)
+         {
+            // ✅ OPTIMAL SELL - Execute
+            status_reason = "OPTIMAL SELL ✅ - ENTERING";
+            status_progress = "ENTERING SELL";
+            
+            LogMessage("✅ SELL - OPTIMAL SETUP (" + IntegerToString(optimalCount) + "/4 factors)");
+            LogMessage("Confidence: " + IntegerToString(total_confidence) + "/100 (Optimal: " + (confidenceOptimal ? "YES" : "NO") + ")");
+            LogMessage("MTF Score: " + IntegerToString(mtf_score) + "/40 (Optimal: " + (mtfOptimal ? "YES" : "NO") + ")");
+            LogMessage("ADX: " + DoubleToString(current_adx, 1) + " (Optimal: " + (adxOptimal ? "YES" : "NO") + ")");
+            LogMessage("Volume Ratio: " + DoubleToString(volume_ratio, 2) + "x (Optimal: " + (volumeOptimal ? "YES" : "NO") + ")");
+            LogMessage("MTF Details: " + mtf_desc);
+            LogMessage("SELL Target: 95% of TP at " + DoubleToString(tp_price, _Digits));
+            
+            sl_price = CalculateOptimalSL(final_trend, entry_price, tp_price, current_ma_fast, current_atr, Target_RR, rates);
+            
+            ExecuteTrade(final_trend, entry_price, sl_price, tp_price, total_confidence, 
+                         pullback_score, mtf_score, adx_score,
+                         volume_score, pattern_score,
+                         pullback_desc, mtf_desc, 
+                         GetVolumeDescription(volume_ratio), 
+                         GetPatternDescription(rates, final_trend), 
+                         price_pos_desc);
+         }
+         else
+         {
+            // ❌ SELL CONDITIONS NOT MET - Need 2+ factors
+            status_reason = "SELL NEEDS 2+ FACTORS (" + IntegerToString(optimalCount) + "/4)";
+            status_progress = "WAITING: OPTIMAL SELL SETUP";
+            
+            LogMessage("❌ SELL - CONDITIONS NOT MET");
+            LogMessage("Optimal Factors: " + IntegerToString(optimalCount) + "/4 (Need 2+, Confidence must be optimal)");
+            LogMessage("Confidence: " + IntegerToString(total_confidence) + "/100 (Optimal: " + (confidenceOptimal ? "YES" : "NO") + ")");
+            LogMessage("MTF Score: " + IntegerToString(mtf_score) + "/40 (Optimal: " + (mtfOptimal ? "YES" : "NO") + ")");
+            LogMessage("ADX: " + DoubleToString(current_adx, 1) + " (Optimal: " + (adxOptimal ? "YES" : "NO") + ")");
+            LogMessage("Volume Ratio: " + DoubleToString(volume_ratio, 2) + "x (Optimal: " + (volumeOptimal ? "YES" : "NO") + ")");
+            LogMessage("MTF Details: " + mtf_desc);
+         }
       }
    }
    else if(!is_pullback && !has_open_position)
@@ -1805,12 +1919,11 @@ void DetectPullbackAndExecute(MqlRates &rates[], MqlRates &rates_h1[], MqlRates 
       else if(final_trend == TREND_DOWN)
          raw_percent = (current_price - swing_low) / (swing_high - swing_low) * 100;
       
-      if(raw_percent < 25.0 && final_trend == TREND_UP)
-      {
-         status_reason = "PULLBACK TOO SHALLOW (" + DoubleToString(raw_percent, 1) + "%)";
-         status_progress = "WAITING: PULLBACK";
-      }
-      else if(raw_percent < 35.0 && final_trend == TREND_DOWN)
+      //--- Get min pullback for "too shallow" check
+      double pullback_min = GetPullbackMin(final_trend);
+      double pullback_min_pct = pullback_min * 100;
+      
+      if(raw_percent < pullback_min_pct)
       {
          status_reason = "PULLBACK TOO SHALLOW (" + DoubleToString(raw_percent, 1) + "%)";
          status_progress = "WAITING: PULLBACK";
