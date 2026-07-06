@@ -1,12 +1,16 @@
 //+------------------------------------------------------------------+
 //|                                 Range_Pullback_DayTrader.mq5     |
 //|                                   Day Trading - M15/H1          |
-//|                    WITH INBUILT MTF SYSTEM                       |
-//|                    OPTIMIZED FOR SELL TRADES                     |
+//|                    SCORING SYSTEM (NEW WEIGHTS):                 |
+//|                    MTF: 45, Pullback: 25, MACD: 15,             |
+//|                    RSI: 10, Alignment: 5                        |
+//|                    MTF: D1-45%, H1-35%, M15-20%                 |
+//|                    UPGRADED: RSI/MACD Exit Protection           |
+//|                    V2.0 - STRUCTURE SL + 2R TP + DYNAMIC SIZING|
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
 #property link      ""
-#property version   "1.00"
+#property version   "2.0"
 
 #include <Trade/Trade.mqh>
 
@@ -14,70 +18,73 @@
 input int      MA_Fast_Period     = 120;         // Fast MA Period (Entry - M15) - 30 hours
 input int      MA_Slow_Period     = 120;         // Slow MA Period (Entry - M15) - 30 hours
 input int      MA_Trend_Period    = 60;          // Trend MA Period (H1) - 60 hours (2.5 days)
-input int      Range_Period       = 60;          // Range Detection Period (15 hours on M15)
+input int      Range_Period       = 250;         // Range Detection Period (62.5 hours on M15)
 input int      SL_Structure_Bars  = 20;          // Bars for SL Structure (5 hours on M15)
-input double   Pullback_Threshold = 0.25;        // Fibonacci Pullback Level
 input ENUM_TIMEFRAMES Trend_Timeframe = PERIOD_H1; // Trend Timeframe
 input ENUM_TIMEFRAMES Entry_Timeframe  = PERIOD_M15; // Entry Timeframe
-input double   Fixed_Lot_Size     = 0.01;        // Fixed Lot Size (FIXED at 0.01)
+
+//--- POSITION SIZING
+input double   Risk_Per_Trade_Pct = 2.0;         // Risk per trade (% of account)
+input double   Max_Lot_Size = 0.1;               // Maximum lot size (cap for safety)
+input double   Min_Lot_Size = 0.01;              // Minimum lot size
+
+//--- SL/TP Parameters
 input int      Slippage           = 10;          // Slippage in points
-input double   MinRR              = 1.0;         // Minimum Risk/Reward Ratio
-input double   Target_RR          = 2.0;         // Target RR for TP-based SL
+input double   Target_RR          = 2.0;         // Target R:R (2.0 = 2R)
+input double   SL_ATR_Multiplier  = 0.5;         // ATR multiplier for SL buffer
+input double   Max_SL_ATR         = 2.0;         // Max SL in ATR terms
+input double   Min_SL_Distance    = 20.0;        // Minimum SL distance in points
 
-//--- Pullback Ranges (Separate for BUY and SELL)
-input double   Buy_Pullback_Min   = 0.25;        // BUY: Minimum pullback (25%)
-input double   Buy_Pullback_Max   = 0.85;        // BUY: Maximum pullback (85%)
-input double   Sell_Pullback_Min  = 0.30;        // SELL: Minimum pullback (30%)
-input double   Sell_Pullback_Max  = 0.85;        // SELL: Maximum pullback (85%)
+//--- Confidence Threshold
+input int      Confidence_Threshold = 70;        // Minimum confidence (0-100)
 
-//--- Confidence Thresholds (Separate for BUY and SELL)
-input int      Buy_Confidence_Threshold  = 70;   // Minimum confidence for BUY (0-100)
-input int      Sell_Confidence_Threshold = 55;   // Minimum confidence for SELL (0-100)
+//--- MACD/RSI BOOST
+input bool     Enable_MACD_RSI_Boost = true;     // Allow low confidence entries when both RSI & MACD > 60%
+input double   MACD_RSI_Boost_Threshold = 60.0;  // Minimum % for both to trigger boost
+input int      Boost_Confidence_Reduction = 20;  // Reduce required confidence by this % when boosted
 
-//--- SELL Optimization Parameters - CORRECTED
-input bool     Enable_Sell_Optimization  = true; // Enable SELL-specific optimizations
-input int      Sell_Confidence_Min       = 55;   // SELL: Minimum confidence (sweet spot)
-input int      Sell_Confidence_Max       = 65;   // SELL: Maximum confidence (cap)
-
-// CORRECTED: MTF range on 0-40 scale (19/40 = 47.5%)
-input int      Sell_MTF_Score_Min        = 19;   // SELL: Minimum MTF score (47.5% of 40)
-input int      Sell_MTF_Score_Max        = 26;   // SELL: Maximum MTF score (65% of 40)
-
-input int      Sell_ADX_Score_Min        = 20;   // SELL: Minimum ADX (0-100)
-input int      Sell_ADX_Score_Max        = 50;   // SELL: Maximum ADX (0-100)
-
-input double   Sell_Volume_Ratio_Min     = 0.5;  // SELL: Minimum volume ratio
-input double   Sell_Volume_Ratio_Max     = 3.0;  // SELL: Maximum volume ratio
-
-//--- Volume & Pattern Confirmations
-input bool     Enable_Volume_Filter = true;      // Enable volume confirmation
-input double   Min_Volume_Ratio = 1.2;           // Minimum volume vs average (1.0 = average)
-input int      Volume_Period = 20;               // Period for average volume calculation
-input bool     Enable_Pattern_Filter = true;     // Enable candlestick pattern confirmation
+//--- Trade Direction Controls
+input bool     Enable_Buy_Trades   = true;       // Enable BUY trades
+input bool     Enable_Sell_Trades  = false;      // Enable SELL trades (set to true to enable sells)
 
 //--- Colors
-input color    MA_Fast_Color      = clrMagenta;  // Fast MA Color (M15)
-input color    MA_Slow_Color      = clrDodgerBlue; // Slow MA Color (M15)
-input color    MA_Trend_Color     = clrGold;     // Trend MA Color (H1)
+input color    MA_Fast_Color      = clrMagenta;
+input color    MA_Slow_Color      = clrDodgerBlue;
+input color    MA_Trend_Color     = clrGold;
 
 //--- Profit Management Inputs
 input bool     Enable_Smart_Profit_Management = true;
-input double   Breakeven_Threshold = 50.0;       // % to TP to move SL to breakeven
+input bool     Enable_Partial_Closes = true;     // Enable partial profit taking
+input int      Partial_Close_Interval = 10;      // Close % every X% of TP
+input double   Min_Volume_For_Partial = 0.01;    // Minimum volume to leave
+input double   Breakeven_Threshold = 40.0;       // Move SL to breakeven (40%)
 input double   Breakeven_Buffer_Points = 5;      // Buffer above breakeven in points
-input double   SL_20Percent_Threshold = 70.0;    // % to TP to move SL to 20% profit
-input double   SL_50Percent_Threshold = 95.0;    // % to TP to move SL to 50% profit
-input double   Min_Volume_For_Partials = 0.02;
+input double   SL_20Percent_Threshold = 60.0;    // Lock 20% profit (60%)
+input double   SL_50Percent_Threshold = 80.0;    // Lock 50% profit (80%)
 
 //--- Day Trading Filters
 input bool     Enable_Spread_Filter = true;
 input double   Max_Spread_Pips = 5.0;
-input bool     Enable_Time_Filter = false;       // DISABLED - Trade 24/7
+input bool     Enable_Time_Filter = false;
 input bool     Enable_Daily_Limit = false;
 input int      Max_Daily_Trades = 3;
 
 //--- Logging & Display Toggles
-input bool     Enable_Logging = true;            // Enable detailed logging to Experts tab
-input bool     Enable_Chart_Comments = true;     // Enable trade markers on chart
+input bool     Enable_Logging = true;
+input bool     Enable_Chart_Comments = true;
+
+//--- RSI/MACD Exit Protection Inputs
+input bool     Enable_RSI_MACD_Exit_Protection = true;
+input double   RSI_Exit_Threshold = 40.0;
+input double   MACD_Exit_Threshold = 40.0;
+input double   RSI_Hard_Exit_Threshold = 35.0;
+input double   MACD_Hard_Exit_Threshold = 30.0;
+input bool     Require_Both_For_Exit = false;
+
+//--- Entry Protection Inputs
+input bool     Enable_Entry_Indicator_Filter = true;
+input double   Entry_Min_RSI = 40.0;
+input double   Entry_Min_MACD = 40.0;
 
 //--- Enumeration
 enum ENUM_TREND_DIRECTION
@@ -95,9 +102,10 @@ int handle_MA_H1_50;
 int handle_MA_H1_21;
 int handle_MA_M15_50;
 int handle_MA_M15_21;
-int handle_MA_D1_89;        // D1 89 EMA for MTF
+int handle_MA_D1_89;
 int handle_ATR;
-int handle_ADX;
+int handle_RSI;
+int handle_MACD;
 
 double range_high, range_low, range_mid;
 bool in_range = false;
@@ -111,6 +119,30 @@ ENUM_TREND_DIRECTION trend_entry = TREND_NONE;
 //--- Daily trade counter
 int daily_trades = 0;
 datetime last_trade_date = 0;
+
+//--- Time-based control for confidence checks
+datetime last_confidence_check = 0;
+int confidence_check_interval = 5;
+
+//--- Cache variables for 5-second updates
+double cached_price = 0;
+double cached_pullback_percent = 0;
+int cached_pullback_score = 0;
+int cached_mtf_score = 0;
+int cached_alignment_score = 0;
+int cached_rsi_score = 0;
+int cached_macd_score = 0;
+int cached_total_confidence = 0;
+bool cached_has_signal = false;
+bool cached_boost_active = false;
+ENUM_TREND_DIRECTION cached_final_trend = TREND_NONE;
+double cached_entry_price = 0;
+double cached_sl_price = 0;
+double cached_tp_price = 0;
+string cached_pullback_desc = "";
+string cached_mtf_desc = "";
+string cached_price_pos_desc = "";
+string cached_alignment_desc = "";
 
 //--- Status variables
 string status_in_trade = "NO";
@@ -126,19 +158,47 @@ string status_rr = "0.00";
 string status_pullback_ending = "N/A";
 string status_ma_cross = "N/A";
 string status_daily_trades = "0/3";
+string status_alignment = "N/A";
+string status_rsi = "N/A";
+string status_macd = "N/A";
+string status_exit_warning = "NONE";
+string status_boost = "OFF";
+string trade_signature_display = "";
 
-//--- Volume & Pattern Status
-string status_volume = "N/A";
-string status_pattern = "N/A";
-int volume_score = 0;
-int pattern_score = 0;
-double volume_ratio = 0;
+//--- Component Scores
+int display_pullback_score = 0;
+int display_mtf_score = 0;
+int display_alignment_score = 0;
+int display_rsi_score = 0;
+int display_macd_score = 0;
+int display_total_confidence = 0;
+double display_pullback_pct = 0;
+string display_pullback_zone = "N/A";
+
+//--- RSI & MACD Support Percentages
+double rsi_value = 0;
+double macd_value = 0;
+double macd_signal_value = 0;
+int rsi_score = 0;
+int macd_score = 0;
+double rsi_bullish_support = 0;
+double rsi_bearish_support = 0;
+double rsi_display_pct = 50;
+double macd_bullish_support = 0;
+double macd_bearish_support = 0;
+double macd_display_pct = 50;
 
 //--- MTF Status
 int mtf_total_score = 0;
 string mtf_quality = "N/A";
 
-//--- Profit Tracker Structure
+//--- D1 Score tracking
+int d1_score_value = 0;
+int h1_score_value = 0;
+int m15_score_value = 0;
+string d1_status = "N/A";
+
+//--- Profit Tracker Structure - ENHANCED
 struct ProfitTracker
 {
     ulong posTicket;
@@ -149,38 +209,32 @@ struct ProfitTracker
     double entryPrice;
     double tpPrice;
     ENUM_POSITION_TYPE posType;
+    double initialVolume;
+    double currentVolume;
+    bool partialsProcessed[];
+    double partialLevelsProcessed[];
+    int partialCount;
+    bool partialClosesComplete;
+    double lastPartialPercent;
 };
 
 ProfitTracker profitTrackers[];
 int trackerCount = 0;
-
 int last_candle_time = 0;
-
-//--- Failed trades storage for display
-struct FailedTrade
-{
-    datetime time;
-    double price;
-    ENUM_TREND_DIRECTION direction;
-    string reason;
-    int confidence;
-    double pullback_pct;
-};
-
-FailedTrade failedTrades[];
-int failedTradeCount = 0;
 
 //--- Forward declarations
 void ClosePosition();
 void CheckOpenPositions();
-void DrawStatusPanel();
+void DrawChartInfo();
 void DetectRange(MqlRates &rates[]);
 void ExecuteTrade(ENUM_TREND_DIRECTION trend, double entry_price, double sl_price, double tp_price,
-                  int total_confidence, int pullback_score, int mtf_score, int adx_score,
-                  int vol_score, int pat_score,
+                  int total_confidence, int pullback_score, int mtf_score,
+                  int rsi_score_val, int macd_score_val, int alignment_score,
                   string pullback_desc, string mtf_desc, 
-                  string volume_desc, string pattern_desc, string price_pos_desc,
-                  bool is_rejected = false, string reject_reason = "");
+                  string price_pos_desc,
+                  string alignment_desc,
+                  bool is_rejected = false, string reject_reason = "",
+                  bool boost_active = false);
 void InitializeProfitTracker(ulong posTicket);
 void CleanupProfitTrackers();
 void ManageProfits();
@@ -190,7 +244,16 @@ void ResetDailyCounter();
 int GetMaxPositions();
 bool CanAddNewPosition();
 void LogMessage(string message, bool isError = false);
-void DrawTradeMarker(double price, ENUM_TREND_DIRECTION direction, string label, bool isFailed = false);
+void UpdateTradeSignatureDisplay();
+void RunFullAnalysis();
+void RunConfidenceCheck();
+bool CheckExitConditions();
+bool CheckEntryConditions();
+double CalculateDynamicLotSize(double entry_price, double sl_price);
+bool ClosePartialPosition(ulong posTicket, double closePercent);
+bool ProcessPartialCloses(ulong posTicket, double currentPercentToTP);
+double CalculateStructureSL(ENUM_TREND_DIRECTION trend, double entry_price, MqlRates &rates[], double atr_value);
+double Calculate2R_TP(ENUM_TREND_DIRECTION trend, double entry_price, double sl_price);
 
 //--- MTF Functions
 int CalculateUnifiedMTFScore(ENUM_TREND_DIRECTION tradeDirection,
@@ -198,80 +261,62 @@ int CalculateUnifiedMTFScore(ENUM_TREND_DIRECTION tradeDirection,
                              double h1_close, double h1_open, double h1_prev_close, double h1_prev_open,
                              double m15_price, double m15_ma60, double m15_ma21, double m15_ma50, double m15_ma120,
                              double d1_price, double d1_ema89, double atr_value,
-                             string &h1_desc, string &m15_desc, string &d1_desc);
-string GetPullbackZoneDescription(double pullback_percent);
+                             string &h1_desc, string &m15_desc, string &d1_desc,
+                             int &d1_score, int &h1_score, int &m15_score);
+
+//--- Pullback Scoring Function
+int CalculatePullbackScore(double pullback_percent);
+
+//--- Trend Alignment Scoring Function
+int CalculateTrendAlignmentScore(ENUM_TREND_DIRECTION h1_trend, 
+                                 ENUM_TREND_DIRECTION m15_trend,
+                                 double current_price,
+                                 double h1_ma60,
+                                 double m15_ma120,
+                                 string &alignment_desc);
+
+//--- RSI Scoring Function
+int CalculateRSIScore(double rsi, ENUM_TREND_DIRECTION trend, double &bullish_support, double &bearish_support, double &display_pct);
+
+//--- MACD Scoring Function
+int CalculateMACDScore(double macd_main, double macd_signal, ENUM_TREND_DIRECTION trend, 
+                       double &bullish_support, double &bearish_support, double &display_pct);
+
+//--- Boost Check
+bool CheckMACD_RSI_Boost();
 
 //+------------------------------------------------------------------+
-//| Get Pullback Min/Max based on direction                          |
-//+------------------------------------------------------------------+
-double GetPullbackMin(ENUM_TREND_DIRECTION direction)
-{
-   if(direction == TREND_UP)
-      return Buy_Pullback_Min;
-   else if(direction == TREND_DOWN)
-      return Sell_Pullback_Min;
-   else
-      return 0.25; // Default fallback
-}
-
-double GetPullbackMax(ENUM_TREND_DIRECTION direction)
-{
-   if(direction == TREND_UP)
-      return Buy_Pullback_Max;
-   else if(direction == TREND_DOWN)
-      return Sell_Pullback_Max;
-   else
-      return 0.85; // Default fallback
-}
-
-//+------------------------------------------------------------------+
-//| Get Confidence Threshold based on direction                      |
+//| Get Confidence Threshold - WITH BOOST SUPPORT                    |
 //+------------------------------------------------------------------+
 int GetConfidenceThreshold(ENUM_TREND_DIRECTION direction)
 {
-   if(direction == TREND_UP)
-      return Buy_Confidence_Threshold;
-   else if(direction == TREND_DOWN)
-      return Sell_Confidence_Threshold;
-   else
-      return 70; // Default fallback
+   int baseThreshold = Confidence_Threshold;
+   
+   if(Enable_MACD_RSI_Boost && CheckMACD_RSI_Boost())
+   {
+      int boostedThreshold = baseThreshold - Boost_Confidence_Reduction;
+      if(boostedThreshold < 30) boostedThreshold = 30;
+      return boostedThreshold;
+   }
+   
+   return baseThreshold;
 }
 
 //+------------------------------------------------------------------+
-//| Check if SELL Confidence is in Optimal Range                     |
+//| Check MACD/RSI Boost - Returns true if both > threshold        |
 //+------------------------------------------------------------------+
-bool IsSellConfidenceOptimal(int confidence)
+bool CheckMACD_RSI_Boost()
 {
-   if(!Enable_Sell_Optimization) return true;
-   return (confidence >= Sell_Confidence_Min && confidence <= Sell_Confidence_Max);
-}
-
-//+------------------------------------------------------------------+
-//| Check if SELL MTF Score is in Optimal Range                      |
-//+------------------------------------------------------------------+
-bool IsSellMTFOptimal(int mtfScore)
-{
-   if(!Enable_Sell_Optimization) return true;
-   // mtfScore is 0-40, 19/40 = 47.5%
-   return (mtfScore >= Sell_MTF_Score_Min && mtfScore <= Sell_MTF_Score_Max);
-}
-
-//+------------------------------------------------------------------+
-//| Check if SELL ADX is in Optimal Range                            |
-//+------------------------------------------------------------------+
-bool IsSellADXOptimal(double adx)
-{
-   if(!Enable_Sell_Optimization) return true;
-   return (adx >= Sell_ADX_Score_Min && adx <= Sell_ADX_Score_Max);
-}
-
-//+------------------------------------------------------------------+
-//| Check if SELL Volume is in Optimal Range                         |
-//+------------------------------------------------------------------+
-bool IsSellVolumeOptimal(double volumeRatio)
-{
-   if(!Enable_Sell_Optimization) return true;
-   return (volumeRatio >= Sell_Volume_Ratio_Min && volumeRatio <= Sell_Volume_Ratio_Max);
+   if(!Enable_MACD_RSI_Boost) return false;
+   if(cached_final_trend != TREND_UP) return false;
+   
+   if(rsi_display_pct >= MACD_RSI_Boost_Threshold && 
+      macd_display_pct >= MACD_RSI_Boost_Threshold)
+   {
+      return true;
+   }
+   
+   return false;
 }
 
 //+------------------------------------------------------------------+
@@ -287,52 +332,17 @@ void LogMessage(string message, bool isError = false)
 }
 
 //+------------------------------------------------------------------+
-//| Draw Trade Marker                                                |
+//| Update Trade Signature Display                                   |
 //+------------------------------------------------------------------+
-void DrawTradeMarker(double price, ENUM_TREND_DIRECTION direction, string label, bool isFailed = false)
+void UpdateTradeSignatureDisplay()
 {
-   if(!Enable_Chart_Comments) return;
-   
-   static int markerCount = 0;
-   markerCount++;
-   
-   string prefix = "Trade_" + IntegerToString(markerCount) + "_";
-   color arrow_color = isFailed ? clrYellow : (direction == TREND_UP ? clrLime : clrRed);
-   int arrow_code = (direction == TREND_UP) ? 241 : 242;
-   
-   datetime time = TimeCurrent();
-   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-   double offset = (direction == TREND_UP) ? -25 * point : 25 * point;
-   string icon = isFailed ? "❌" : "✅";
-   
-   if(ObjectCreate(0, prefix + "Arrow", OBJ_ARROW, 0, time, price))
-   {
-      ObjectSetInteger(0, prefix + "Arrow", OBJPROP_ARROWCODE, arrow_code);
-      ObjectSetInteger(0, prefix + "Arrow", OBJPROP_COLOR, arrow_color);
-      ObjectSetInteger(0, prefix + "Arrow", OBJPROP_WIDTH, 3);
-      ObjectSetInteger(0, prefix + "Arrow", OBJPROP_ANCHOR, ANCHOR_CENTER);
-   }
-   
-   if(ObjectCreate(0, prefix + "Label", OBJ_TEXT, 0, time + PeriodSeconds(Entry_Timeframe)*3, price + offset))
-   {
-      ObjectSetString(0, prefix + "Label", OBJPROP_TEXT, icon + " " + label);
-      ObjectSetInteger(0, prefix + "Label", OBJPROP_COLOR, clrWhite);
-      ObjectSetInteger(0, prefix + "Label", OBJPROP_FONTSIZE, 9);
-      ObjectSetInteger(0, prefix + "Label", OBJPROP_ANCHOR, ANCHOR_LEFT);
-      ObjectSetInteger(0, prefix + "Label", OBJPROP_BACK, true);
-      ObjectSetInteger(0, prefix + "Label", OBJPROP_BGCOLOR, clrBlack);
-      ObjectSetString(0, prefix + "Label", OBJPROP_FONT, "Arial");
-   }
-   
-   string priceLabel = DoubleToString(price, _Digits);
-   if(ObjectCreate(0, prefix + "Price", OBJ_TEXT, 0, time + PeriodSeconds(Entry_Timeframe)*1, price))
-   {
-      ObjectSetString(0, prefix + "Price", OBJPROP_TEXT, priceLabel);
-      ObjectSetInteger(0, prefix + "Price", OBJPROP_COLOR, clrGray);
-      ObjectSetInteger(0, prefix + "Price", OBJPROP_FONTSIZE, 8);
-      ObjectSetInteger(0, prefix + "Price", OBJPROP_ANCHOR, ANCHOR_LEFT);
-      ObjectSetString(0, prefix + "Price", OBJPROP_FONT, "Arial");
-   }
+   string boostStr = cached_boost_active ? "⚡BOOST" : "";
+   trade_signature_display = StringFormat(
+       "PB:%.0f%%|MTF:%d/45|AL:%d/5|RSI:%d/10|MCD:%d/15|C:%d%%%s",
+       display_pullback_pct, display_mtf_score, display_alignment_score,
+       display_rsi_score, display_macd_score, display_total_confidence,
+       boostStr
+   );
 }
 
 //+------------------------------------------------------------------+
@@ -340,13 +350,11 @@ void DrawTradeMarker(double price, ENUM_TREND_DIRECTION direction, string label,
 //+------------------------------------------------------------------+
 void StoreFailedTrade(double price, ENUM_TREND_DIRECTION direction, string reason, 
                       int confidence, double pullback_pct,
-                      double adx_value = 0, double volume_ratio_val = 0)
+                      int pullback_score = 0, int alignment_score = 0, 
+                      int mtf_score = 0, int rsi_score_val = 0, int macd_score_val = 0)
 {
-   // Signature: C:xx% | MTF:xx% | PB:xx% | ADX:xx | VOL:xx
-   string signature = StringFormat("C:%d%% | MTF:%d%% | PB:%.0f%% | ADX:%.1f | VOL:%.1fx",
-                                   confidence, mtf_total_score, pullback_pct, adx_value, volume_ratio_val);
-   string label = signature;
-   DrawTradeMarker(price, direction, label, true);
+   LogMessage("🚫 FAILED TRADE: " + reason + " | PB:" + DoubleToString(pullback_pct, 0) + 
+              "% | C:" + IntegerToString(confidence) + "%");
 }
 
 //+------------------------------------------------------------------+
@@ -354,13 +362,10 @@ void StoreFailedTrade(double price, ENUM_TREND_DIRECTION direction, string reaso
 //+------------------------------------------------------------------+
 void StoreSuccessfulTrade(double price, ENUM_TREND_DIRECTION direction, 
                           int confidence, double pullback_pct,
-                          double adx_value = 0, double volume_ratio_val = 0)
+                          int pullback_score = 0, int alignment_score = 0, 
+                          int mtf_score = 0, int rsi_score_val = 0, int macd_score_val = 0)
 {
-   // Signature: C:xx% | MTF:xx% | PB:xx% | ADX:xx | VOL:xx
-   string signature = StringFormat("C:%d%% | MTF:%d%% | PB:%.0f%% | ADX:%.1f | VOL:%.1fx",
-                                   confidence, mtf_total_score, pullback_pct, adx_value, volume_ratio_val);
-   string label = signature + " ✅";
-   DrawTradeMarker(price, direction, label, false);
+   return;
 }
 
 //+------------------------------------------------------------------+
@@ -368,7 +373,6 @@ void StoreSuccessfulTrade(double price, ENUM_TREND_DIRECTION direction,
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   //--- Initialize indicators
    handle_MA_Fast = iMA(_Symbol, Entry_Timeframe, MA_Fast_Period, 0, MODE_SMA, PRICE_CLOSE);
    handle_MA_Slow = iMA(_Symbol, Entry_Timeframe, MA_Slow_Period, 0, MODE_SMA, PRICE_CLOSE);
    handle_MA_Trend = iMA(_Symbol, Trend_Timeframe, MA_Trend_Period, 0, MODE_SMA, PRICE_CLOSE);
@@ -378,56 +382,39 @@ int OnInit()
    handle_MA_M15_21 = iMA(_Symbol, Entry_Timeframe, 21, 0, MODE_SMA, PRICE_CLOSE);
    handle_MA_D1_89 = iMA(_Symbol, PERIOD_D1, 89, 0, MODE_EMA, PRICE_CLOSE);
    handle_ATR = iATR(_Symbol, Entry_Timeframe, 14);
-   handle_ADX = iADX(_Symbol, Entry_Timeframe, 14);
+   handle_RSI = iRSI(_Symbol, Entry_Timeframe, 14, PRICE_CLOSE);
+   handle_MACD = iMACD(_Symbol, Entry_Timeframe, 12, 26, 9, PRICE_CLOSE);
    
    if(handle_MA_Fast == INVALID_HANDLE || handle_MA_Slow == INVALID_HANDLE || 
       handle_MA_Trend == INVALID_HANDLE || handle_MA_H1_50 == INVALID_HANDLE ||
       handle_MA_H1_21 == INVALID_HANDLE || handle_MA_M15_50 == INVALID_HANDLE ||
       handle_MA_M15_21 == INVALID_HANDLE || handle_MA_D1_89 == INVALID_HANDLE ||
-      handle_ATR == INVALID_HANDLE || handle_ADX == INVALID_HANDLE)
+      handle_ATR == INVALID_HANDLE || handle_RSI == INVALID_HANDLE ||
+      handle_MACD == INVALID_HANDLE)
    {
       Print("Failed to create indicator handles!");
       return(INIT_FAILED);
    }
    
-   //--- Initialize arrays
    ArrayResize(profitTrackers, 100);
    trackerCount = 0;
-   ArrayResize(failedTrades, 100);
-   failedTradeCount = 0;
    
    LogMessage("=========================================");
    LogMessage("   DAY TRADING RANGE PULLBACK EXECUTOR   ");
-   LogMessage("   WITH INBUILT MTF SYSTEM               ");
-   LogMessage("   OPTIMIZED FOR SELL TRADES             ");
+   LogMessage("   VERSION 2.0 - STRUCTURE SL + 2R TP   ");
    LogMessage("=========================================");
-   LogMessage("Entry Timeframe: M15 (15-minute candles)");
-   LogMessage("Trend Timeframe: H1 (1-hour candles)");
-   LogMessage("Fast MA: " + IntegerToString(MA_Fast_Period) + " bars = 30 hours");
-   LogMessage("Slow MA: " + IntegerToString(MA_Slow_Period) + " bars = 30 hours");
-   LogMessage("Trend MA: " + IntegerToString(MA_Trend_Period) + " bars = 60 hours (2.5 days)");
-   LogMessage("Range Period: " + IntegerToString(Range_Period) + " bars = 15 hours");
-   LogMessage("Max Daily Trades: " + IntegerToString(Max_Daily_Trades));
-   LogMessage("Fixed Lot Size: 0.01");
-   LogMessage("BUY Pullback Range: " + DoubleToString(Buy_Pullback_Min * 100, 0) + "-" + DoubleToString(Buy_Pullback_Max * 100, 0) + "%");
-   LogMessage("SELL Pullback Range: " + DoubleToString(Sell_Pullback_Min * 100, 0) + "-" + DoubleToString(Sell_Pullback_Max * 100, 0) + "%");
-   LogMessage("BUY Confidence Threshold: " + IntegerToString(Buy_Confidence_Threshold) + "%");
-   LogMessage("SELL Confidence Threshold: " + IntegerToString(Sell_Confidence_Threshold) + "%");
-   LogMessage("SELL Optimization: " + (Enable_Sell_Optimization ? "ON" : "OFF"));
-   if(Enable_Sell_Optimization)
-   {
-      LogMessage("  SELL Confidence Range: " + IntegerToString(Sell_Confidence_Min) + "-" + IntegerToString(Sell_Confidence_Max) + "%");
-      LogMessage("  SELL MTF Range: " + IntegerToString(Sell_MTF_Score_Min) + "-" + IntegerToString(Sell_MTF_Score_Max) + "/40");
-      LogMessage("  SELL ADX Range: " + IntegerToString(Sell_ADX_Score_Min) + "-" + IntegerToString(Sell_ADX_Score_Max));
-      LogMessage("  SELL Volume Range: " + DoubleToString(Sell_Volume_Ratio_Min, 1) + "-" + DoubleToString(Sell_Volume_Ratio_Max, 1) + "x");
-      LogMessage("  SELL Requires 2+ Optimal Factors (Confidence + MTF + ADX or Volume)");
-      LogMessage("  SELL Target: 95% of TP (not full TP)");
-   }
-   LogMessage("MTF System: H1 (50%) + M15 (30%) + D1 (20%) = 40 points");
-   LogMessage("Volume Filter: " + (Enable_Volume_Filter ? "ON" : "OFF"));
-   LogMessage("Pattern Filter: " + (Enable_Pattern_Filter ? "ON" : "OFF"));
-   LogMessage("Logging: " + (Enable_Logging ? "ON" : "OFF"));
-   LogMessage("Chart Comments: " + (Enable_Chart_Comments ? "ON" : "OFF"));
+   LogMessage("🔵 POSITION SIZING:");
+   LogMessage("   Risk per trade: " + DoubleToString(Risk_Per_Trade_Pct, 1) + "%");
+   LogMessage("   Min Lot: " + DoubleToString(Min_Lot_Size, 2));
+   LogMessage("   Max Lot: " + DoubleToString(Max_Lot_Size, 2));
+   LogMessage("🔵 SL/TP: STRUCTURE SL + 2R TP");
+   LogMessage("   SL ATR Multiplier: " + DoubleToString(SL_ATR_Multiplier, 1));
+   LogMessage("   Target RR: " + DoubleToString(Target_RR, 1) + "R");
+   LogMessage("🔵 PROFIT MANAGEMENT:");
+   LogMessage("   Partial Closes: Every " + IntegerToString(Partial_Close_Interval) + "%");
+   LogMessage("   Breakeven: " + DoubleToString(Breakeven_Threshold, 0) + "%");
+   LogMessage("   Lock 20%: " + DoubleToString(SL_20Percent_Threshold, 0) + "%");
+   LogMessage("   Lock 50%: " + DoubleToString(SL_50Percent_Threshold, 0) + "%");
    LogMessage("=========================================");
    
    ResetDailyCounter();
@@ -448,7 +435,8 @@ void OnDeinit(const int reason)
    if(handle_MA_M15_21 != INVALID_HANDLE) IndicatorRelease(handle_MA_M15_21);
    if(handle_MA_D1_89 != INVALID_HANDLE) IndicatorRelease(handle_MA_D1_89);
    if(handle_ATR != INVALID_HANDLE) IndicatorRelease(handle_ATR);
-   if(handle_ADX != INVALID_HANDLE) IndicatorRelease(handle_ADX);
+   if(handle_RSI != INVALID_HANDLE) IndicatorRelease(handle_RSI);
+   if(handle_MACD != INVALID_HANDLE) IndicatorRelease(handle_MACD);
    ObjectsDeleteAll(0);
    Comment("");
 }
@@ -490,118 +478,22 @@ bool CanAddNewPosition()
 }
 
 //+------------------------------------------------------------------+
-//| Calculate Unified MTF Score (0-40) - INBUILT SYSTEM             |
+//| Calculate Unified MTF Score (OPTIMIZED - 0-45)                  |
 //+------------------------------------------------------------------+
 int CalculateUnifiedMTFScore(ENUM_TREND_DIRECTION tradeDirection,
                              double h1_price, double h1_ma60, double h1_ma21, double h1_ma50,
                              double h1_close, double h1_open, double h1_prev_close, double h1_prev_open,
                              double m15_price, double m15_ma60, double m15_ma21, double m15_ma50, double m15_ma120,
                              double d1_price, double d1_ema89, double atr_value,
-                             string &h1_desc, string &m15_desc, string &d1_desc)
+                             string &h1_desc, string &m15_desc, string &d1_desc,
+                             int &d1_score, int &h1_score, int &m15_score)
 {
    int h1Score = 0;
    int m15Score = 0;
    int d1Score = 0;
    
-   // ========================================
-   // H1 SCORE (0-20) - 50% of MTF
-   // ========================================
-   h1_desc = "";
-   
-   // 1. H1 Trend direction: +5 (Base)
-   h1Score += 5;
-   h1_desc = "Trend: " + (tradeDirection == TREND_UP ? "BULLISH" : "BEARISH") + " [+5]";
-   
-   // 2. H1 MA21 > MA50 (Bullish) / < MA50 (Bearish): +5
-   bool h1MA21AboveMA50 = (h1_ma21 > h1_ma50);
-   bool h1MA21BelowMA50 = (h1_ma21 < h1_ma50);
-   
-   if((tradeDirection == TREND_UP && h1MA21AboveMA50) ||
-      (tradeDirection == TREND_DOWN && h1MA21BelowMA50))
-   {
-      h1Score += 5;
-      h1_desc += " | MA21>MA50 [+5]";
-   }
-   else
-   {
-      h1_desc += " | MA21 not aligned [0]";
-   }
-   
-   // 3. H1 Candle momentum: +5 (body > 1.5x previous)
-   double h1_body = MathAbs(h1_close - h1_open);
-   double h1_prev_body = MathAbs(h1_prev_close - h1_prev_open);
-   if(h1_body > h1_prev_body * 1.5)
-   {
-      h1Score += 5;
-      h1_desc += " | Momentum [+5]";
-   }
-   else
-   {
-      h1_desc += " | No momentum [0]";
-   }
-   
-   // 4. H1 Price > MA50 (Bullish) / < MA50 (Bearish): +5
-   if((tradeDirection == TREND_UP && h1_close > h1_ma50) ||
-      (tradeDirection == TREND_DOWN && h1_close < h1_ma50))
-   {
-      h1Score += 5;
-      h1_desc += " | Price>MA50 [+5]";
-   }
-   else
-   {
-      h1_desc += " | Price not >MA50 [0]";
-   }
-   
-   h1Score = MathMin(20, h1Score);
-   h1_desc = "H1: " + IntegerToString(h1Score) + "/20 - " + h1_desc;
-   
-   // ========================================
-   // M15 SCORE (0-12) - 30% of MTF
-   // ========================================
-   m15_desc = "";
-   
-   // 1. M15 direction matches: +6
-   m15Score += 6;
-   m15_desc = "Trend match [+6]";
-   
-   // 2. M15 MA21 > MA50 (Bullish) / < MA50 (Bearish): +3
-   bool m15MA21AboveMA50 = (m15_ma21 > m15_ma50);
-   bool m15MA21BelowMA50 = (m15_ma21 < m15_ma50);
-   
-   if((tradeDirection == TREND_UP && m15MA21AboveMA50) ||
-      (tradeDirection == TREND_DOWN && m15MA21BelowMA50))
-   {
-      m15Score += 3;
-      m15_desc += " | MA21>MA50 [+3]";
-   }
-   else
-   {
-      m15_desc += " | MA21 not aligned [0]";
-   }
-   
-   // 3. M15 MA60 > MA120 (Bullish) / < MA120 (Bearish): +3
-   bool m15MA60AboveMA120 = (m15_ma60 > m15_ma120);
-   bool m15MA60BelowMA120 = (m15_ma60 < m15_ma120);
-   
-   if((tradeDirection == TREND_UP && m15MA60AboveMA120) ||
-      (tradeDirection == TREND_DOWN && m15MA60BelowMA120))
-   {
-      m15Score += 3;
-      m15_desc += " | MA60>MA120 [+3]";
-   }
-   else
-   {
-      m15_desc += " | MA60 not stacked [0]";
-   }
-   
-   m15Score = MathMin(12, m15Score);
-   m15_desc = "M15: " + IntegerToString(m15Score) + "/12 - " + m15_desc;
-   
-   // ========================================
-   // D1 SCORE (-5 to +8) - 20% of MTF
-   // ========================================
+   // D1 SCORE (0-20)
    d1_desc = "";
-   
    bool d1AboveEMA89 = (d1_price > d1_ema89);
    bool d1BelowEMA89 = (d1_price < d1_ema89);
    bool d1NearEMA89 = (MathAbs(d1_price - d1_ema89) < atr_value);
@@ -614,22 +506,166 @@ int CalculateUnifiedMTFScore(ENUM_TREND_DIRECTION tradeDirection,
    else if((tradeDirection == TREND_UP && d1AboveEMA89) ||
            (tradeDirection == TREND_DOWN && d1BelowEMA89))
    {
-      d1Score = 8;
-      d1_desc = "D1: ALIGNED [+8]";
+      d1Score = 20;
+      d1_desc = "D1: STRONGLY ALIGNED [+20]";
    }
    else
    {
-      d1Score = -5;
-      d1_desc = "D1: MISALIGNED [-5]";
+      d1Score = -4;
+      d1_desc = "D1: MISALIGNED [-4]";
    }
    
-   // ========================================
-   // CALCULATE TOTAL (0-40)
-   // ========================================
+   // H1 SCORE (0-16)
+   h1_desc = "";
+   h1Score += 4;
+   h1_desc = "Trend: " + (tradeDirection == TREND_UP ? "BULLISH" : "BEARISH") + " [+4]";
+   
+   bool h1MA21AboveMA50 = (h1_ma21 > h1_ma50);
+   bool h1MA21BelowMA50 = (h1_ma21 < h1_ma50);
+   
+   if((tradeDirection == TREND_UP && h1MA21AboveMA50) ||
+      (tradeDirection == TREND_DOWN && h1MA21BelowMA50))
+   {
+      h1Score += 6;
+      h1_desc += " | MA21>MA50 [+6]";
+   }
+   else
+   {
+      h1_desc += " | MA21 not aligned [0]";
+   }
+   
+   double h1_body = MathAbs(h1_close - h1_open);
+   double h1_prev_body = MathAbs(h1_prev_close - h1_prev_open);
+   if(h1_body > h1_prev_body * 1.5)
+   {
+      h1Score += 4;
+      h1_desc += " | Momentum [+4]";
+   }
+   else
+   {
+      h1_desc += " | No momentum [0]";
+   }
+   
+   if((tradeDirection == TREND_UP && h1_close > h1_ma50) ||
+      (tradeDirection == TREND_DOWN && h1_close < h1_ma50))
+   {
+      h1Score += 2;
+      h1_desc += " | Price>MA50 [+2]";
+   }
+   else
+   {
+      h1_desc += " | Price not >MA50 [0]";
+   }
+   
+   h1Score = MathMin(16, h1Score);
+   h1_desc = "H1: " + IntegerToString(h1Score) + "/16 - " + h1_desc;
+   
+   // M15 SCORE (0-9)
+   m15_desc = "";
+   m15Score += 3;
+   m15_desc = "Trend match [+3]";
+   
+   bool m15MA21AboveMA50 = (m15_ma21 > m15_ma50);
+   bool m15MA21BelowMA50 = (m15_ma21 < m15_ma50);
+   
+   if((tradeDirection == TREND_UP && m15MA21AboveMA50) ||
+      (tradeDirection == TREND_DOWN && m15MA21BelowMA50))
+   {
+      m15Score += 4;
+      m15_desc += " | MA21>MA50 [+4]";
+   }
+   else
+   {
+      m15_desc += " | MA21 not aligned [0]";
+   }
+   
+   bool m15MA60AboveMA120 = (m15_ma60 > m15_ma120);
+   bool m15MA60BelowMA120 = (m15_ma60 < m15_ma120);
+   
+   if((tradeDirection == TREND_UP && m15MA60AboveMA120) ||
+      (tradeDirection == TREND_DOWN && m15MA60BelowMA120))
+   {
+      m15Score += 2;
+      m15_desc += " | MA60>MA120 [+2]";
+   }
+   else
+   {
+      m15_desc += " | MA60 not stacked [0]";
+   }
+   
+   m15Score = MathMin(9, m15Score);
+   m15_desc = "M15: " + IntegerToString(m15Score) + "/9 - " + m15_desc;
+   
+   d1_score = d1Score;
+   h1_score = h1Score;
+   m15_score = m15Score;
+   
    int totalScore = h1Score + m15Score + d1Score;
-   totalScore = MathMax(0, MathMin(40, totalScore));
+   totalScore = MathMax(0, MathMin(45, totalScore));
    
    return totalScore;
+}
+
+//+------------------------------------------------------------------+
+//| Calculate Pullback Score (OPTIMIZED - 0-25)                     |
+//+------------------------------------------------------------------+
+int CalculatePullbackScore(double pullback_percent)
+{
+    double pb = pullback_percent;
+    
+    if(pb < 10.0 || pb > 95.0) return 0;
+    
+    // GOLDEN ZONE (38.2-50%)
+    if(pb >= 38.2 && pb <= 50.0)
+    {
+        double distanceFromCenter = MathAbs(pb - 44.1);
+        double score = 25 - (distanceFromCenter / 5.9) * 4;
+        return (int)MathMax(21, MathMin(25, score));
+    }
+    
+    // ENHANCED: 50-61.8%
+    if(pb > 50.0 && pb <= 61.8)
+    {
+        double score = 22 - ((pb - 50.0) / 11.8) * 4;
+        return (int)MathMax(18, MathMin(22, score));
+    }
+    
+    // ENHANCED: 61.8-78.6%
+    if(pb > 61.8 && pb <= 78.6)
+    {
+        double score = 18 - ((pb - 61.8) / 16.8) * 8;
+        return (int)MathMax(10, MathMin(18, score));
+    }
+    
+    // ENHANCED: 78.6-85%
+    if(pb > 78.6 && pb <= 85.0)
+    {
+        double score = 10 - ((pb - 78.6) / 6.4) * 5;
+        return (int)MathMax(5, MathMin(10, score));
+    }
+    
+    // EARLY ZONE (25-38.2%)
+    if(pb >= 25.0 && pb < 38.2)
+    {
+        double score = 16 + ((pb - 25.0) / 13.2) * 5;
+        return (int)MathMax(16, MathMin(21, score));
+    }
+    
+    // TOO SHALLOW (<25%)
+    if(pb >= 15.0 && pb < 25.0)
+    {
+        double score = 1 + ((pb - 15.0) / 10.0) * 2;
+        return (int)MathMax(1, MathMin(3, score));
+    }
+    
+    // TOO DEEP (>85%)
+    if(pb > 85.0 && pb <= 90.0)
+    {
+        double score = 3 + ((90.0 - pb) / 5.0) * 2;
+        return (int)MathMax(3, MathMin(5, score));
+    }
+    
+    return 0;
 }
 
 //+------------------------------------------------------------------+
@@ -655,6 +691,265 @@ string GetPullbackZoneDescription(double pullback_percent)
 }
 
 //+------------------------------------------------------------------+
+//| Calculate Trend Alignment Score (REDUCED - 0-5)                 |
+//+------------------------------------------------------------------+
+int CalculateTrendAlignmentScore(ENUM_TREND_DIRECTION h1_trend, 
+                                 ENUM_TREND_DIRECTION m15_trend,
+                                 double current_price,
+                                 double h1_ma60,
+                                 double m15_ma120,
+                                 string &alignment_desc)
+{
+    int score = 0;
+    alignment_desc = "";
+    
+    if(h1_trend == m15_trend && h1_trend != TREND_NONE)
+    {
+        double h1_distance = MathAbs(current_price - h1_ma60) / h1_ma60 * 100;
+        double m15_distance = MathAbs(current_price - m15_ma120) / m15_ma120 * 100;
+        
+        if(h1_distance > 3.0 && m15_distance > 2.0)
+        {
+            score = 5;
+            alignment_desc = "Perfect Alignment + Strong Trend";
+        }
+        else if(h1_distance > 1.5 && m15_distance > 1.0)
+        {
+            score = 4;
+            alignment_desc = "Perfect Alignment + Moderate Trend";
+        }
+        else
+        {
+            score = 3;
+            alignment_desc = "Perfect Alignment + Weak Trend";
+        }
+    }
+    else if(h1_trend != TREND_NONE && m15_trend != TREND_NONE)
+    {
+        double h1_distance = MathAbs(current_price - h1_ma60) / h1_ma60 * 100;
+        
+        if(h1_distance > 3.0)
+        {
+            score = 2;
+            alignment_desc = "Misaligned - H1 Strong (H1 dominates)";
+        }
+        else if(h1_distance > 1.5)
+        {
+            score = 1;
+            alignment_desc = "Misaligned - H1 Moderate (conflict)";
+        }
+        else
+        {
+            score = 1;
+            alignment_desc = "Misaligned - H1 Weak (M15 may dominate)";
+        }
+    }
+    else if((h1_trend != TREND_NONE && m15_trend == TREND_NONE) ||
+            (h1_trend == TREND_NONE && m15_trend != TREND_NONE))
+    {
+        if(h1_trend != TREND_NONE)
+        {
+            double h1_distance = MathAbs(current_price - h1_ma60) / h1_ma60 * 100;
+            if(h1_distance > 2.0)
+                score = 1;
+            else
+                score = 1;
+        }
+        else
+        {
+            score = 1;
+        }
+    }
+    else
+    {
+        score = 0;
+        alignment_desc = "No Clear Trend - CHOPPY";
+    }
+    
+    return score;
+}
+
+//+------------------------------------------------------------------+
+//| Calculate RSI Score (RECALIBRATED - 0-10)                       |
+//+------------------------------------------------------------------+
+int CalculateRSIScore(double rsi, ENUM_TREND_DIRECTION trend, double &bullish_support, double &bearish_support, double &display_pct)
+{
+    bullish_support = 0;
+    bearish_support = 0;
+    display_pct = 50;
+    
+    if(rsi < 50)
+    {
+        double distance = (50 - rsi) / 50.0;
+        
+        bullish_support = 50 - (distance * 50);
+        bearish_support = 50 + (distance * 50);
+        display_pct = bullish_support;
+        
+        if(bearish_support >= 85) return 1;
+        if(bearish_support >= 70) return 3;
+        if(bearish_support >= 60) return 5;
+        if(bearish_support >= 55) return 7;
+        return 8;
+    }
+    else if(rsi > 50)
+    {
+        double distance = (rsi - 50) / 50.0;
+        
+        bullish_support = 50 + (distance * 50);
+        bearish_support = 50 - (distance * 50);
+        display_pct = bullish_support;
+        
+        if(bullish_support >= 85) return 10;
+        if(bullish_support >= 70) return 8;
+        if(bullish_support >= 60) return 6;
+        if(bullish_support >= 55) return 4;
+        return 2;
+    }
+    else
+    {
+        bullish_support = 50;
+        bearish_support = 50;
+        display_pct = 50;
+        return 5;
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Calculate MACD Score (RECALIBRATED - 0-15)                      |
+//+------------------------------------------------------------------+
+int CalculateMACDScore(double macd_main, double macd_signal, ENUM_TREND_DIRECTION trend, 
+                       double &bullish_support, double &bearish_support, double &display_pct)
+{
+    double diff = macd_main - macd_signal;
+    double absDiff = MathAbs(diff);
+    
+    bullish_support = 0;
+    bearish_support = 0;
+    display_pct = 50;
+    
+    if(absDiff < 0.0001) 
+    {
+        bullish_support = 50;
+        bearish_support = 50;
+        display_pct = 50;
+        return 7;
+    }
+    
+    double maxDiff = 5.0;
+    double scale = MathMin(absDiff / maxDiff, 1.0);
+    
+    if(diff < 0)
+    {
+        bullish_support = 50 - (scale * 50);
+        bearish_support = 50 + (scale * 50);
+        display_pct = bullish_support;
+        
+        if(bearish_support >= 85) return 2;
+        if(bearish_support >= 70) return 5;
+        if(bearish_support >= 60) return 8;
+        if(bearish_support >= 55) return 11;
+        return 13;
+    }
+    else
+    {
+        bullish_support = 50 + (scale * 50);
+        bearish_support = 50 - (scale * 50);
+        display_pct = bullish_support;
+        
+        if(bullish_support >= 85) return 15;
+        if(bullish_support >= 70) return 12;
+        if(bullish_support >= 60) return 9;
+        if(bullish_support >= 55) return 6;
+        return 3;
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Check Exit Conditions - RSI/MACD Exit Protection                |
+//+------------------------------------------------------------------+
+bool CheckExitConditions()
+{
+   if(!Enable_RSI_MACD_Exit_Protection) return false;
+   if(!has_open_position) return false;
+   if(current_trade_direction != TREND_UP) return false;
+   
+   bool rsiBearish = (rsi_display_pct < RSI_Exit_Threshold);
+   bool macdBearish = (macd_display_pct < MACD_Exit_Threshold);
+   bool rsiHardBearish = (rsi_display_pct < RSI_Hard_Exit_Threshold);
+   bool macdHardBearish = (macd_display_pct < MACD_Hard_Exit_Threshold);
+   
+   if(rsiHardBearish || macdHardBearish)
+   {
+      status_exit_warning = "🔴 HARD EXIT: " + 
+                            (rsiHardBearish ? "RSI " + DoubleToString(rsi_display_pct, 0) + "%" : "") +
+                            (rsiHardBearish && macdHardBearish ? " & " : "") +
+                            (macdHardBearish ? "MACD " + DoubleToString(macd_display_pct, 0) + "%" : "");
+      LogMessage("🔴 EXIT TRIGGERED: Hard exit condition - " + status_exit_warning);
+      return true;
+   }
+   
+   bool exitTriggered = false;
+   
+   if(Require_Both_For_Exit)
+   {
+      exitTriggered = (rsiBearish && macdBearish);
+   }
+   else
+   {
+      exitTriggered = (rsiBearish || macdBearish);
+   }
+   
+   if(exitTriggered)
+   {
+      status_exit_warning = "⚠️ EXIT SIGNAL: " + 
+                            (rsiBearish ? "RSI " + DoubleToString(rsi_display_pct, 0) + "%" : "") +
+                            (rsiBearish && macdBearish ? " & " : "") +
+                            (macdBearish ? "MACD " + DoubleToString(macd_display_pct, 0) + "%" : "");
+      LogMessage("🔴 EXIT TRIGGERED: " + status_exit_warning);
+      return true;
+   }
+   
+   status_exit_warning = "NONE";
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| Check Entry Conditions - RSI/MACD Entry Filter                  |
+//+------------------------------------------------------------------+
+bool CheckEntryConditions()
+{
+   if(!Enable_Entry_Indicator_Filter) return true;
+   if(cached_final_trend != TREND_UP) return true;
+   
+   if(rsi_display_pct < Entry_Min_RSI)
+   {
+      status_reason = "ENTRY BLOCKED: RSI too low (" + DoubleToString(rsi_display_pct, 0) + "% < " + DoubleToString(Entry_Min_RSI, 0) + "%)";
+      LogMessage("🚫 Entry blocked: RSI " + DoubleToString(rsi_display_pct, 0) + "% below minimum " + DoubleToString(Entry_Min_RSI, 0) + "%");
+      return false;
+   }
+   
+   if(macd_display_pct < Entry_Min_MACD)
+   {
+      status_reason = "ENTRY BLOCKED: MACD too low (" + DoubleToString(macd_display_pct, 0) + "% < " + DoubleToString(Entry_Min_MACD, 0) + "%)";
+      LogMessage("🚫 Entry blocked: MACD " + DoubleToString(macd_display_pct, 0) + "% below minimum " + DoubleToString(Entry_Min_MACD, 0) + "%");
+      return false;
+   }
+   
+   bool nearExitRSI = (rsi_display_pct < RSI_Exit_Threshold);
+   bool nearExitMACD = (macd_display_pct < MACD_Exit_Threshold);
+   
+   if(nearExitRSI || nearExitMACD)
+   {
+      status_reason = "ENTRY BLOCKED: Bearish divergence (RSI/MACD near exit threshold)";
+      LogMessage("🚫 Entry blocked: RSI " + DoubleToString(rsi_display_pct, 0) + "% / MACD " + DoubleToString(macd_display_pct, 0) + "% - waiting for neutral/bullish");
+      return false;
+   }
+   
+   return true;
+}
+
+//+------------------------------------------------------------------+
 //| Expert tick function                                             |
 //+------------------------------------------------------------------+
 void OnTick()
@@ -667,7 +962,7 @@ void OnTick()
       if(spread > Max_Spread_Pips * SymbolInfoDouble(_Symbol, SYMBOL_POINT) * 10)
       {
          status_reason = "SPREAD TOO HIGH";
-         DrawStatusPanel();
+         DrawChartInfo();
          return;
       }
    }
@@ -675,25 +970,58 @@ void OnTick()
    if(Enable_Daily_Limit && !CheckDailyTradeLimit())
    {
       status_reason = "DAILY LIMIT REACHED";
-      DrawStatusPanel();
+      DrawChartInfo();
       return;
    }
    
-   datetime current_bar_time = iTime(_Symbol, Entry_Timeframe, 0);
-   bool new_bar = (current_bar_time != last_candle_time);
+   if(Enable_RSI_MACD_Exit_Protection && has_open_position)
+   {
+      if(CheckExitConditions())
+      {
+         ClosePosition();
+         status_reason = "EXITED: RSI/MACD PROTECTION";
+         status_progress = "EXIT TRIGGERED";
+         DrawChartInfo();
+         return;
+      }
+   }
    
    if(Enable_Smart_Profit_Management && has_open_position)
    {
       ManageProfits();
    }
    
-   if(!new_bar) 
+   datetime current_bar_time = iTime(_Symbol, Entry_Timeframe, 0);
+   bool new_bar = (current_bar_time != last_candle_time);
+   
+   if(new_bar)
    {
-      DrawStatusPanel();
+      last_candle_time = (int)current_bar_time;
+      last_confidence_check = TimeCurrent();
+      
+      RunFullAnalysis();
+      DrawChartInfo();
       return;
    }
-   last_candle_time = (int)current_bar_time;
    
+   datetime current_time = TimeCurrent();
+   if(current_time - last_confidence_check >= confidence_check_interval)
+   {
+      last_confidence_check = current_time;
+      RunConfidenceCheck();
+      DrawChartInfo();
+   }
+   else
+   {
+      DrawChartInfo();
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Run Full Analysis - NEW BAR ONLY                                 |
+//+------------------------------------------------------------------+
+void RunFullAnalysis()
+{
    CheckOpenPositions();
    UpdateStatus();
    
@@ -705,7 +1033,6 @@ void OnTick()
    {
       status_reason = "INSUFFICIENT DATA";
       status_progress = "DATA ERROR";
-      DrawStatusPanel();
       return;
    }
    
@@ -716,7 +1043,6 @@ void OnTick()
    if(CopyRates(_Symbol, Trend_Timeframe, 0, 10, rates_h1) < 5) 
    {
       status_reason = "H1 DATA ERROR";
-      DrawStatusPanel();
       return;
    }
    
@@ -725,12 +1051,11 @@ void OnTick()
    if(CopyRates(_Symbol, PERIOD_D1, 0, 5, rates_d1) < 3)
    {
       status_reason = "D1 DATA ERROR";
-      DrawStatusPanel();
       return;
    }
    
    double ma_fast[], ma_slow[], ma_trend[], ma_h1_50[], ma_h1_21[], ma_m15_50[], ma_m15_21[], ma_d1_89[], atr[];
-   double adx_main[], adx_plus[], adx_minus[];
+   double rsi_buffer[], macd_main[], macd_signal_buffer[], macd_hist[];
    ArraySetAsSeries(ma_fast, true);
    ArraySetAsSeries(ma_slow, true);
    ArraySetAsSeries(ma_trend, true);
@@ -740,9 +1065,10 @@ void OnTick()
    ArraySetAsSeries(ma_m15_21, true);
    ArraySetAsSeries(ma_d1_89, true);
    ArraySetAsSeries(atr, true);
-   ArraySetAsSeries(adx_main, true);
-   ArraySetAsSeries(adx_plus, true);
-   ArraySetAsSeries(adx_minus, true);
+   ArraySetAsSeries(rsi_buffer, true);
+   ArraySetAsSeries(macd_main, true);
+   ArraySetAsSeries(macd_signal_buffer, true);
+   ArraySetAsSeries(macd_hist, true);
    
    if(CopyBuffer(handle_MA_Fast, 0, 0, 10, ma_fast) < 10 ||
       CopyBuffer(handle_MA_Slow, 0, 0, 10, ma_slow) < 10 ||
@@ -753,49 +1079,38 @@ void OnTick()
       CopyBuffer(handle_MA_M15_21, 0, 0, 10, ma_m15_21) < 5 ||
       CopyBuffer(handle_MA_D1_89, 0, 0, 5, ma_d1_89) < 3 ||
       CopyBuffer(handle_ATR, 0, 0, 10, atr) < 10 ||
-      CopyBuffer(handle_ADX, 0, 0, 5, adx_main) < 5 ||
-      CopyBuffer(handle_ADX, 1, 0, 5, adx_plus) < 5 ||
-      CopyBuffer(handle_ADX, 2, 0, 5, adx_minus) < 5)
+      CopyBuffer(handle_RSI, 0, 0, 5, rsi_buffer) < 3 ||
+      CopyBuffer(handle_MACD, 0, 0, 5, macd_main) < 3 ||
+      CopyBuffer(handle_MACD, 1, 0, 5, macd_signal_buffer) < 3)
    {
       status_reason = "INDICATOR DATA ERROR";
-      DrawStatusPanel();
       return;
    }
    
+   cached_price = rates[0].close;
+   rsi_value = rsi_buffer[0];
+   macd_value = macd_main[0];
+   macd_signal_value = macd_signal_buffer[0];
+   
+   int temp_rsi_score = CalculateRSIScore(rsi_value, TREND_UP, rsi_bullish_support, rsi_bearish_support, rsi_display_pct);
+   int temp_macd_score = CalculateMACDScore(macd_value, macd_signal_value, TREND_UP, macd_bullish_support, macd_bearish_support, macd_display_pct);
+   
    DetectRange(rates);
    
-   double current_price = rates[0].close;
-   double current_ma_fast = ma_fast[0];
-   double current_ma_slow = ma_slow[0];
-   double current_ma_trend = ma_trend[0];
-   double current_ma50_h1 = ma_h1_50[0];
-   double current_ma21_h1 = ma_h1_21[0];
-   double current_ma50_m15 = ma_m15_50[0];
-   double current_ma21_m15 = ma_m15_21[0];
-   double current_ma120_m15 = iMA(_Symbol, Entry_Timeframe, 120, 0, MODE_SMA, PRICE_CLOSE);
-   double current_ma89_d1 = ma_d1_89[0];
-   double current_atr = atr[0];
-   double current_adx = adx_main[0];
-   double current_adx_plus = adx_plus[0];
-   double current_adx_minus = adx_minus[0];
-   
-   //--- STEP 1: H1 TREND (MASTER DIRECTION)
-   if(current_price > current_ma_trend)
+   if(cached_price > ma_trend[0])
       trend_bias = TREND_UP;
-   else if(current_price < current_ma_trend)
+   else if(cached_price < ma_trend[0])
       trend_bias = TREND_DOWN;
    else
       trend_bias = TREND_NONE;
    
-   //--- STEP 2: M15 ENTRY (Must match H1)
-   if(current_price > current_ma_fast)
+   if(cached_price > ma_fast[0])
       trend_entry = TREND_UP;
-   else if(current_price < current_ma_fast)
+   else if(cached_price < ma_fast[0])
       trend_entry = TREND_DOWN;
    else
       trend_entry = TREND_NONE;
    
-   //--- Update status
    if(trend_bias == TREND_UP)
       status_trend = "BULLISH ▲";
    else if(trend_bias == TREND_DOWN)
@@ -813,34 +1128,316 @@ void OnTick()
    if(trend_bias != TREND_NONE && trend_bias != trend_entry)
       status_entry += " ⚠️ MISALIGNED";
    
-   //--- Calculate pullback
-   double pullback_percent = 0;
-   if(range_high > range_low)
-   {
-      if(trend_bias == TREND_UP)
-         pullback_percent = (range_high - current_price) / (range_high - range_low) * 100;
-      else if(trend_bias == TREND_DOWN)
-         pullback_percent = (current_price - range_low) / (range_high - range_low) * 100;
-   }
-   string pullback_zone = GetPullbackZoneDescription(pullback_percent);
-   status_pullback = pullback_zone;
+   int alignment_score = 0;
+   string alignment_desc = "";
+   alignment_score = CalculateTrendAlignmentScore(
+       trend_bias, trend_entry, cached_price,
+       ma_trend[0], ma_fast[0], alignment_desc
+   );
+   cached_alignment_score = alignment_score;
+   cached_alignment_desc = alignment_desc;
+   status_alignment = alignment_desc;
    
-   if(current_ma21_m15 > current_ma50_m15)
+   ENUM_TREND_DIRECTION final_trend = TREND_NONE;
+   if(trend_bias == trend_entry && trend_bias != TREND_NONE)
+       final_trend = trend_bias;
+   else if(trend_bias != TREND_NONE)
+       final_trend = trend_bias;
+   else if(trend_entry != TREND_NONE)
+       final_trend = trend_entry;
+   else
+   {
+       if(!has_open_position)
+       {
+           status_reason = "NO CLEAR TREND";
+           status_alignment = "CHOPPY";
+       }
+       return;
+   }
+   cached_final_trend = final_trend;
+   
+   double swing_high = rates[0].high;
+   double swing_low = rates[0].low;
+   for(int i = 1; i < Range_Period && i < ArraySize(rates); i++)
+   {
+      if(rates[i].high > swing_high) swing_high = rates[i].high;
+      if(rates[i].low < swing_low) swing_low = rates[i].low;
+   }
+   
+   if(swing_high <= swing_low) return;
+   
+   double entry_price = 0;
+   double pullback_percent = 0;
+   
+   if(final_trend == TREND_UP)
+   {
+       if(cached_price < swing_high && cached_price > swing_low)
+       {
+           pullback_percent = (swing_high - cached_price) / (swing_high - swing_low) * 100;
+           entry_price = cached_price;
+       }
+       else
+       {
+           if(!has_open_position)
+           {
+               if(cached_price >= swing_high)
+                   status_reason = "PRICE ABOVE SWING HIGH (BREAKOUT)";
+               else if(cached_price <= swing_low)
+                   status_reason = "PRICE BELOW SWING LOW (BREAKDOWN)";
+           }
+           return;
+       }
+   }
+   else if(final_trend == TREND_DOWN)
+   {
+       if(cached_price > swing_low && cached_price < swing_high)
+       {
+           pullback_percent = (cached_price - swing_low) / (swing_high - swing_low) * 100;
+           entry_price = cached_price;
+       }
+       else
+       {
+           if(!has_open_position)
+           {
+               if(cached_price <= swing_low)
+                   status_reason = "PRICE BELOW SWING LOW (BREAKDOWN)";
+               else if(cached_price >= swing_high)
+                   status_reason = "PRICE ABOVE SWING HIGH (BREAKOUT)";
+           }
+           return;
+       }
+   }
+   
+   cached_entry_price = entry_price;
+   cached_pullback_percent = pullback_percent;
+   display_pullback_pct = pullback_percent;
+   display_pullback_zone = GetPullbackZoneDescription(pullback_percent);
+   status_pullback = display_pullback_zone;
+   
+   cached_pullback_score = CalculatePullbackScore(pullback_percent);
+   display_pullback_score = cached_pullback_score;
+   
+   string h1_desc, m15_desc, d1_desc;
+   int d1_score_tmp = 0, h1_score_tmp = 0, m15_score_tmp = 0;
+   double current_ma120_m15 = iMA(_Symbol, Entry_Timeframe, 120, 0, MODE_SMA, PRICE_CLOSE);
+   cached_mtf_score = CalculateUnifiedMTFScore(final_trend,
+                                        rates_h1[0].close, ma_trend[0], ma_h1_21[0], ma_h1_50[0],
+                                        rates_h1[0].close, rates_h1[0].open, rates_h1[1].close, rates_h1[1].open,
+                                        cached_price, ma_fast[0], ma_m15_21[0], ma_m15_50[0], current_ma120_m15,
+                                        rates_d1[0].close, ma_d1_89[0], atr[0],
+                                        h1_desc, m15_desc, d1_desc, d1_score_tmp, h1_score_tmp, m15_score_tmp);
+   d1_score_value = d1_score_tmp;
+   h1_score_value = h1_score_tmp;
+   m15_score_value = m15_score_tmp;
+   cached_mtf_desc = h1_desc + " | " + m15_desc + " | " + d1_desc;
+   display_mtf_score = cached_mtf_score;
+   
+   cached_rsi_score = CalculateRSIScore(rsi_value, final_trend, rsi_bullish_support, rsi_bearish_support, rsi_display_pct);
+   display_rsi_score = cached_rsi_score;
+   
+   cached_macd_score = CalculateMACDScore(macd_value, macd_signal_value, final_trend, macd_bullish_support, macd_bearish_support, macd_display_pct);
+   display_macd_score = cached_macd_score;
+   
+   if(rsi_display_pct > 55)
+      status_rsi = "BULLISH";
+   else if(rsi_display_pct < 45)
+      status_rsi = "BEARISH";
+   else
+      status_rsi = "NEUTRAL";
+   
+   if(macd_display_pct > 55)
+      status_macd = "BULLISH";
+   else if(macd_display_pct < 45)
+      status_macd = "BEARISH";
+   else
+      status_macd = "NEUTRAL";
+   
+   display_alignment_score = cached_alignment_score;
+   
+   cached_boost_active = CheckMACD_RSI_Boost();
+   status_boost = cached_boost_active ? "⚡ACTIVE" : "OFF";
+   
+   cached_total_confidence = cached_mtf_score + cached_pullback_score + cached_macd_score + cached_rsi_score + cached_alignment_score;
+   display_total_confidence = cached_total_confidence;
+   status_confidence = IntegerToString(cached_total_confidence) + "/100";
+   
+   int threshold = GetConfidenceThreshold(final_trend);
+   cached_has_signal = (cached_total_confidence >= threshold);
+   status_pullback_ending = cached_has_signal ? "YES" : "NO";
+   
+   double diff_fast = (cached_price - ma_fast[0]) / ma_fast[0] * 100;
+   double diff_trend = (cached_price - ma_trend[0]) / ma_trend[0] * 100;
+   cached_price_pos_desc = StringFormat("Price is %.2f%% %s M15 MA120 and %.2f%% %s H1 MA60",
+      MathAbs(diff_fast), (diff_fast > 0) ? "ABOVE" : "BELOW",
+      MathAbs(diff_trend), (diff_trend > 0) ? "ABOVE" : "BELOW");
+   
+   if(ma_m15_21[0] > ma_m15_50[0])
       status_ma_cross = "MA21 > MA50 (BULLISH)";
-   else if(current_ma21_m15 < current_ma50_m15)
+   else if(ma_m15_21[0] < ma_m15_50[0])
       status_ma_cross = "MA21 < MA50 (BEARISH)";
    else
       status_ma_cross = "MA21 = MA50";
    
    status_daily_trades = IntegerToString(daily_trades) + "/" + IntegerToString(Max_Daily_Trades);
    
-   //--- Detect Pullback and Execute with Inbuilt MTF System
-   DetectPullbackAndExecute(rates, rates_h1, rates_d1, ma_fast, ma_slow, ma_trend, 
-                            ma_h1_50, ma_h1_21, ma_m15_50, ma_m15_21, 
-                            current_ma120_m15, ma_d1_89,
-                            atr, adx_main, adx_plus, adx_minus);
+   DrawPullbackMarker(cached_price, final_trend, pullback_percent, cached_total_confidence, threshold);
    
-   DrawStatusPanel();
+   if(cached_has_signal && !has_open_position)
+   {
+      if(!CheckEntryConditions())
+      {
+         return;
+      }
+      
+      double sl_price = 0;
+      double tp_price = 0;
+      
+      sl_price = CalculateStructureSL(final_trend, entry_price, rates, atr[0]);
+      tp_price = Calculate2R_TP(final_trend, entry_price, sl_price);
+      
+      cached_sl_price = sl_price;
+      cached_tp_price = tp_price;
+      
+      string direction_str = (final_trend == TREND_UP) ? "BUY" : "SELL";
+      string boost_str = cached_boost_active ? " (⚡BOOST ACTIVE)" : "";
+      status_reason = direction_str + " CONFIDENCE MET ✅ - ENTERING" + boost_str;
+      status_progress = "ENTERING " + direction_str;
+      
+      ExecuteTrade(final_trend, entry_price, sl_price, tp_price, cached_total_confidence, 
+                   cached_pullback_score, cached_mtf_score,
+                   cached_rsi_score, cached_macd_score, cached_alignment_score,
+                   cached_pullback_desc, cached_mtf_desc, 
+                   cached_price_pos_desc,
+                   cached_alignment_desc, false, "", cached_boost_active);
+   }
+   else
+   {
+      string direction_str = (final_trend == TREND_UP) ? "BUY" : "SELL";
+      string boost_str = cached_boost_active ? " (⚡BOOST REDUCED THRESHOLD)" : "";
+      status_reason = "LOW " + direction_str + " CONFIDENCE (" + IntegerToString(cached_total_confidence) + "/" + IntegerToString(threshold) + ")" + boost_str;
+      status_progress = "WAITING: " + direction_str + " CONFIDENCE";
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Run Confidence Check - Every 5 Seconds                          |
+//+------------------------------------------------------------------+
+void RunConfidenceCheck()
+{
+   if(has_open_position)
+   {
+      if(Enable_RSI_MACD_Exit_Protection)
+      {
+         if(CheckExitConditions())
+         {
+            ClosePosition();
+            status_reason = "EXITED: RSI/MACD PROTECTION";
+            status_progress = "EXIT TRIGGERED";
+            return;
+         }
+      }
+      return;
+   }
+   
+   if(cached_final_trend == TREND_NONE)
+      return;
+   
+   MqlTick current_tick;
+   if(!SymbolInfoTick(_Symbol, current_tick))
+      return;
+   
+   double current_price = current_tick.bid;
+   
+   if(range_high > range_low)
+   {
+      if(cached_final_trend == TREND_UP)
+         cached_pullback_percent = (range_high - current_price) / (range_high - range_low) * 100;
+      else if(cached_final_trend == TREND_DOWN)
+         cached_pullback_percent = (current_price - range_low) / (range_high - range_low) * 100;
+   }
+   
+   display_pullback_pct = cached_pullback_percent;
+   display_pullback_zone = GetPullbackZoneDescription(cached_pullback_percent);
+   status_pullback = display_pullback_zone;
+   
+   cached_pullback_score = CalculatePullbackScore(cached_pullback_percent);
+   display_pullback_score = cached_pullback_score;
+   
+   display_mtf_score = cached_mtf_score;
+   display_alignment_score = cached_alignment_score;
+   display_rsi_score = cached_rsi_score;
+   display_macd_score = cached_macd_score;
+   
+   cached_boost_active = CheckMACD_RSI_Boost();
+   status_boost = cached_boost_active ? "⚡ACTIVE" : "OFF";
+   
+   cached_total_confidence = cached_mtf_score + cached_pullback_score + cached_macd_score + cached_rsi_score + cached_alignment_score;
+   display_total_confidence = cached_total_confidence;
+   status_confidence = IntegerToString(cached_total_confidence) + "/100";
+   
+   int threshold = GetConfidenceThreshold(cached_final_trend);
+   bool signal_now = (cached_total_confidence >= threshold);
+   cached_has_signal = signal_now;
+   status_pullback_ending = signal_now ? "YES" : "NO";
+   
+   if(signal_now)
+   {
+      cached_entry_price = current_price;
+      display_pullback_pct = cached_pullback_percent;
+   }
+   
+   string direction_str = (cached_final_trend == TREND_UP) ? "BUY" : "SELL";
+   
+   if(signal_now && !has_open_position)
+   {
+      if(!CheckEntryConditions())
+      {
+         return;
+      }
+      
+      string boost_str = cached_boost_active ? " (⚡BOOST ACTIVE)" : "";
+      status_reason = direction_str + " CONFIDENCE MET ✅ - ENTERING (5sec check)" + boost_str;
+      status_progress = "ENTERING " + direction_str;
+      
+      MqlRates rates[];
+      ArraySetAsSeries(rates, true);
+      if(CopyRates(_Symbol, Entry_Timeframe, 0, SL_Structure_Bars + 5, rates) >= SL_Structure_Bars + 5)
+      {
+         double atr_buffer[];
+         ArraySetAsSeries(atr_buffer, true);
+         if(CopyBuffer(handle_ATR, 0, 0, 5, atr_buffer) >= 5)
+         {
+            double current_atr = atr_buffer[0];
+            
+            double sl_price = 0;
+            double tp_price = 0;
+            
+            sl_price = CalculateStructureSL(cached_final_trend, cached_entry_price, rates, current_atr);
+            tp_price = Calculate2R_TP(cached_final_trend, cached_entry_price, sl_price);
+            
+            cached_sl_price = sl_price;
+            cached_tp_price = tp_price;
+         }
+      }
+      
+      ExecuteTrade(cached_final_trend, cached_entry_price, cached_sl_price, cached_tp_price, 
+                   cached_total_confidence, 
+                   cached_pullback_score, cached_mtf_score,
+                   cached_rsi_score, cached_macd_score, cached_alignment_score,
+                   cached_pullback_desc, cached_mtf_desc, 
+                   cached_price_pos_desc,
+                   cached_alignment_desc, false, "", cached_boost_active);
+   }
+   else if(signal_now && has_open_position)
+   {
+      status_reason = direction_str + " CONFIDENCE MET ✅ - ALREADY IN TRADE";
+   }
+   else
+   {
+      string boost_str = cached_boost_active ? " (⚡BOOST REDUCED THRESHOLD)" : "";
+      status_reason = "LOW " + direction_str + " CONFIDENCE (" + IntegerToString(cached_total_confidence) + "/" + IntegerToString(threshold) + ")" + boost_str;
+      status_progress = "WAITING: " + direction_str + " CONFIDENCE";
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -872,70 +1469,322 @@ bool CheckDailyTradeLimit()
 }
 
 //+------------------------------------------------------------------+
-//| Draw Status Panel                                                |
+//| Draw Chart Info                                                  |
 //+------------------------------------------------------------------+
-void DrawStatusPanel()
+void DrawChartInfo()
 {
-   string text = "";
-   text += "╔══════════════════════════════════════════════════════════════════╗\n";
-   text += "║              DAY TRADING BOT - CRT EXECUTOR                    ║\n";
-   text += "╠══════════════════════════════════════════════════════════════════╣\n";
-   text += "║ 📈 TREND:     " + PadRight(status_trend, 20) + "║\n";
-   text += "║ ✅ ENTRY:     " + PadRight(status_entry, 20) + "║\n";
-   text += "║ 📊 PULLBACK:  " + PadRight(status_pullback, 20) + "║\n";
+   if(!Enable_Chart_Comments) return;
    
-   // Determine ending status based on confidence and direction
-   int conf = (int)StringToInteger(status_confidence);
-   int threshold = 70; // Default fallback
+   int yPos = 10;
+   int xPos = 20;
+   int lineHeight = 18;
+   int col2_x = 220;
+   int col3_x = 380;
    
-   // Determine which threshold to use based on current trend
-   if(trend_bias == TREND_UP)
-      threshold = Buy_Confidence_Threshold;
-   else if(trend_bias == TREND_DOWN)
-      threshold = Sell_Confidence_Threshold;
+   yPos += lineHeight + 2;
    
-   if(conf >= threshold && conf > 0)
-   {
-      string endingText = StringFormat("✅ YES (%d%%)", conf);
-      text += "║ 🔄 ENDING:    " + PadRight(endingText, 20) + "║\n";
-   }
-   else if(conf > 0 && conf < threshold)
-   {
-      string endingText = StringFormat("❌ NO (%d%%)", conf);
-      text += "║ 🔄 ENDING:    " + PadRight(endingText, 20) + "║\n";
-   }
+   string boostText = "⚡BOOST: " + status_boost;
+   ObjectCreate(0, "ChartInfo_Boost", OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, "ChartInfo_Boost", OBJPROP_XDISTANCE, xPos);
+   ObjectSetInteger(0, "ChartInfo_Boost", OBJPROP_YDISTANCE, yPos);
+   ObjectSetString(0, "ChartInfo_Boost", OBJPROP_TEXT, boostText);
+   ObjectSetInteger(0, "ChartInfo_Boost", OBJPROP_COLOR, cached_boost_active ? clrLime : clrGray);
+   ObjectSetInteger(0, "ChartInfo_Boost", OBJPROP_FONTSIZE, 9);
+   ObjectSetString(0, "ChartInfo_Boost", OBJPROP_FONT, "Consolas");
+   ObjectSetInteger(0, "ChartInfo_Boost", OBJPROP_BACK, false);
+   
+   string rrText = StringFormat("💵 R:R: %s", status_rr);
+   ObjectCreate(0, "ChartInfo_RR", OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, "ChartInfo_RR", OBJPROP_XDISTANCE, col2_x);
+   ObjectSetInteger(0, "ChartInfo_RR", OBJPROP_YDISTANCE, yPos);
+   ObjectSetString(0, "ChartInfo_RR", OBJPROP_TEXT, rrText);
+   ObjectSetInteger(0, "ChartInfo_RR", OBJPROP_COLOR, clrCyan);
+   ObjectSetInteger(0, "ChartInfo_RR", OBJPROP_FONTSIZE, 9);
+   ObjectSetString(0, "ChartInfo_RR", OBJPROP_FONT, "Consolas");
+   ObjectSetInteger(0, "ChartInfo_RR", OBJPROP_BACK, false);
+   
+   string balText = StringFormat("💰 BAL: %s", status_profit);
+   ObjectCreate(0, "ChartInfo_Bal", OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, "ChartInfo_Bal", OBJPROP_XDISTANCE, col3_x);
+   ObjectSetInteger(0, "ChartInfo_Bal", OBJPROP_YDISTANCE, yPos);
+   ObjectSetString(0, "ChartInfo_Bal", OBJPROP_TEXT, balText);
+   ObjectSetInteger(0, "ChartInfo_Bal", OBJPROP_COLOR, clrGold);
+   ObjectSetInteger(0, "ChartInfo_Bal", OBJPROP_FONTSIZE, 9);
+   ObjectSetString(0, "ChartInfo_Bal", OBJPROP_FONT, "Consolas");
+   ObjectSetInteger(0, "ChartInfo_Bal", OBJPROP_BACK, false);
+   
+   yPos += lineHeight;
+   
+   ObjectCreate(0, "ChartInfo_Sep1", OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, "ChartInfo_Sep1", OBJPROP_XDISTANCE, xPos);
+   ObjectSetInteger(0, "ChartInfo_Sep1", OBJPROP_YDISTANCE, yPos);
+   ObjectSetString(0, "ChartInfo_Sep1", OBJPROP_TEXT, "═══════════════════════════════════════════════════════");
+   ObjectSetInteger(0, "ChartInfo_Sep1", OBJPROP_COLOR, clrGray);
+   ObjectSetInteger(0, "ChartInfo_Sep1", OBJPROP_FONTSIZE, 8);
+   ObjectSetString(0, "ChartInfo_Sep1", OBJPROP_FONT, "Consolas");
+   ObjectSetInteger(0, "ChartInfo_Sep1", OBJPROP_BACK, false);
+   
+   yPos += lineHeight;
+   
+   string mtfText = StringFormat("📊 MTF: %d/45 (D1:%d H1:%d M15:%d)", 
+                                display_mtf_score,
+                                d1_score_value, h1_score_value, m15_score_value);
+   color mtfColor = display_mtf_score >= 35 ? clrLime : (display_mtf_score >= 25 ? clrYellow : clrRed);
+   ObjectCreate(0, "ChartInfo_MTF", OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, "ChartInfo_MTF", OBJPROP_XDISTANCE, xPos);
+   ObjectSetInteger(0, "ChartInfo_MTF", OBJPROP_YDISTANCE, yPos);
+   ObjectSetString(0, "ChartInfo_MTF", OBJPROP_TEXT, mtfText);
+   ObjectSetInteger(0, "ChartInfo_MTF", OBJPROP_COLOR, mtfColor);
+   ObjectSetInteger(0, "ChartInfo_MTF", OBJPROP_FONTSIZE, 9);
+   ObjectSetString(0, "ChartInfo_MTF", OBJPROP_FONT, "Consolas");
+   ObjectSetInteger(0, "ChartInfo_MTF", OBJPROP_BACK, false);
+   yPos += lineHeight;
+   
+   string pbText = StringFormat("📈 PB: %d/25  (%.1f%%)  %s", 
+                                display_pullback_score, 
+                                display_pullback_pct,
+                                display_pullback_zone);
+   color pbColor = display_pullback_score >= 21 ? clrLime : (display_pullback_score >= 15 ? clrYellow : clrRed);
+   ObjectCreate(0, "ChartInfo_PB", OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, "ChartInfo_PB", OBJPROP_XDISTANCE, xPos);
+   ObjectSetInteger(0, "ChartInfo_PB", OBJPROP_YDISTANCE, yPos);
+   ObjectSetString(0, "ChartInfo_PB", OBJPROP_TEXT, pbText);
+   ObjectSetInteger(0, "ChartInfo_PB", OBJPROP_COLOR, pbColor);
+   ObjectSetInteger(0, "ChartInfo_PB", OBJPROP_FONTSIZE, 9);
+   ObjectSetString(0, "ChartInfo_PB", OBJPROP_FONT, "Consolas");
+   ObjectSetInteger(0, "ChartInfo_PB", OBJPROP_BACK, false);
+   yPos += lineHeight;
+   
+   string macd_display_status = "";
+   if(macd_display_pct > 55)
+      macd_display_status = "📈" + DoubleToString(macd_display_pct, 0) + "% (Bullish)";
+   else if(macd_display_pct < 45)
+      macd_display_status = "📉" + DoubleToString(macd_display_pct, 0) + "% (Bearish)";
    else
-      text += "║ 🔄 ENDING:    ⏳ WAITING                         ║\n";
+      macd_display_status = "➡️" + DoubleToString(macd_display_pct, 0) + "% (Neutral)";
    
-   text += "║ 💰 IN TRADE:  " + PadRight(status_in_trade, 20) + "║\n";
-   text += "║ 📊 CONFIDENCE:" + PadRight(status_confidence, 19) + "║\n";
-   text += "║ 📅 DAILY:     " + PadRight(status_daily_trades, 20) + "║\n";
-   text += "║ 💵 R:R:       " + PadRight(status_rr, 20) + "║\n";
-   text += "║ ⚡ STATUS:    " + PadRight(status_reason, 20) + "║\n";
+   string macdText = StringFormat("📊 MACD: %d/15 (%.2f)  %s", 
+                                 display_macd_score, 
+                                 macd_value,
+                                 macd_display_status);
+   color macdColor = display_macd_score >= 12 ? clrLime : (display_macd_score >= 8 ? clrYellow : clrRed);
+   ObjectCreate(0, "ChartInfo_MACD", OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, "ChartInfo_MACD", OBJPROP_XDISTANCE, xPos);
+   ObjectSetInteger(0, "ChartInfo_MACD", OBJPROP_YDISTANCE, yPos);
+   ObjectSetString(0, "ChartInfo_MACD", OBJPROP_TEXT, macdText);
+   ObjectSetInteger(0, "ChartInfo_MACD", OBJPROP_COLOR, macdColor);
+   ObjectSetInteger(0, "ChartInfo_MACD", OBJPROP_FONTSIZE, 9);
+   ObjectSetString(0, "ChartInfo_MACD", OBJPROP_FONT, "Consolas");
+   ObjectSetInteger(0, "ChartInfo_MACD", OBJPROP_BACK, false);
+   yPos += lineHeight;
+   
+   string rsi_display_status = "";
+   if(rsi_display_pct > 55)
+      rsi_display_status = "📈" + DoubleToString(rsi_display_pct, 0) + "% (Bullish)";
+   else if(rsi_display_pct < 45)
+      rsi_display_status = "📉" + DoubleToString(rsi_display_pct, 0) + "% (Bearish)";
+   else
+      rsi_display_status = "➡️" + DoubleToString(rsi_display_pct, 0) + "% (Neutral)";
+   
+   string rsiText = StringFormat("📊 RSI: %d/10 (%.1f)  %s", 
+                                display_rsi_score, 
+                                rsi_value,
+                                rsi_display_status);
+   color rsiColor = display_rsi_score >= 8 ? clrLime : (display_rsi_score >= 5 ? clrYellow : clrRed);
+   ObjectCreate(0, "ChartInfo_RSI", OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, "ChartInfo_RSI", OBJPROP_XDISTANCE, xPos);
+   ObjectSetInteger(0, "ChartInfo_RSI", OBJPROP_YDISTANCE, yPos);
+   ObjectSetString(0, "ChartInfo_RSI", OBJPROP_TEXT, rsiText);
+   ObjectSetInteger(0, "ChartInfo_RSI", OBJPROP_COLOR, rsiColor);
+   ObjectSetInteger(0, "ChartInfo_RSI", OBJPROP_FONTSIZE, 9);
+   ObjectSetString(0, "ChartInfo_RSI", OBJPROP_FONT, "Consolas");
+   ObjectSetInteger(0, "ChartInfo_RSI", OBJPROP_BACK, false);
+   yPos += lineHeight;
+   
+   string alText = StringFormat("🔗 AL: %d/5  %s", 
+                                display_alignment_score,
+                                status_alignment);
+   color alColor = display_alignment_score >= 4 ? clrLime : (display_alignment_score >= 2 ? clrYellow : clrRed);
+   ObjectCreate(0, "ChartInfo_AL", OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, "ChartInfo_AL", OBJPROP_XDISTANCE, xPos);
+   ObjectSetInteger(0, "ChartInfo_AL", OBJPROP_YDISTANCE, yPos);
+   ObjectSetString(0, "ChartInfo_AL", OBJPROP_TEXT, alText);
+   ObjectSetInteger(0, "ChartInfo_AL", OBJPROP_COLOR, alColor);
+   ObjectSetInteger(0, "ChartInfo_AL", OBJPROP_FONTSIZE, 9);
+   ObjectSetString(0, "ChartInfo_AL", OBJPROP_FONT, "Consolas");
+   ObjectSetInteger(0, "ChartInfo_AL", OBJPROP_BACK, false);
+   yPos += lineHeight + 2;
+   
+   if(Enable_RSI_MACD_Exit_Protection)
+   {
+      string exitStatus = "🛡️ EXIT: " + status_exit_warning;
+      color exitColor = clrLime;
+      if(status_exit_warning != "NONE")
+      {
+         if(StringFind(status_exit_warning, "HARD") >= 0)
+            exitColor = clrRed;
+         else
+            exitColor = clrOrange;
+      }
+      ObjectCreate(0, "ChartInfo_Exit", OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, "ChartInfo_Exit", OBJPROP_XDISTANCE, xPos);
+      ObjectSetInteger(0, "ChartInfo_Exit", OBJPROP_YDISTANCE, yPos);
+      ObjectSetString(0, "ChartInfo_Exit", OBJPROP_TEXT, exitStatus);
+      ObjectSetInteger(0, "ChartInfo_Exit", OBJPROP_COLOR, exitColor);
+      ObjectSetInteger(0, "ChartInfo_Exit", OBJPROP_FONTSIZE, 9);
+      ObjectSetString(0, "ChartInfo_Exit", OBJPROP_FONT, "Consolas");
+      ObjectSetInteger(0, "ChartInfo_Exit", OBJPROP_BACK, false);
+      yPos += lineHeight;
+   }
+   
+   ObjectCreate(0, "ChartInfo_Sep2", OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, "ChartInfo_Sep2", OBJPROP_XDISTANCE, xPos);
+   ObjectSetInteger(0, "ChartInfo_Sep2", OBJPROP_YDISTANCE, yPos);
+   ObjectSetString(0, "ChartInfo_Sep2", OBJPROP_TEXT, "───────────────────────────────────────────────────────");
+   ObjectSetInteger(0, "ChartInfo_Sep2", OBJPROP_COLOR, clrGray);
+   ObjectSetInteger(0, "ChartInfo_Sep2", OBJPROP_FONTSIZE, 8);
+   ObjectSetString(0, "ChartInfo_Sep2", OBJPROP_FONT, "Consolas");
+   ObjectSetInteger(0, "ChartInfo_Sep2", OBJPROP_BACK, false);
+   
+   yPos += lineHeight;
+   
+   double confPercent = (double)display_total_confidence;
+   string confText = StringFormat("🎯 TOTAL: %d/100 (%.0f%%)", 
+                                  display_total_confidence,
+                                  confPercent);
+   color confColor = clrRed;
+   if(confPercent >= Confidence_Threshold)
+      confColor = clrLime;
+   else if(confPercent >= 45)
+      confColor = clrYellow;
+   
+   int currentThreshold = GetConfidenceThreshold(cached_final_trend);
+   string threshText = StringFormat("🎯 THRESHOLD: %d%%%s", currentThreshold, 
+                                    (currentThreshold < Confidence_Threshold) ? " ⚡" : "");
+   
+   ObjectCreate(0, "ChartInfo_CONF", OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, "ChartInfo_CONF", OBJPROP_XDISTANCE, xPos);
+   ObjectSetInteger(0, "ChartInfo_CONF", OBJPROP_YDISTANCE, yPos);
+   ObjectSetString(0, "ChartInfo_CONF", OBJPROP_TEXT, confText);
+   ObjectSetInteger(0, "ChartInfo_CONF", OBJPROP_COLOR, confColor);
+   ObjectSetInteger(0, "ChartInfo_CONF", OBJPROP_FONTSIZE, 9);
+   ObjectSetString(0, "ChartInfo_CONF", OBJPROP_FONT, "Consolas");
+   ObjectSetInteger(0, "ChartInfo_CONF", OBJPROP_BACK, false);
+   
+   ObjectCreate(0, "ChartInfo_THRESH", OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, "ChartInfo_THRESH", OBJPROP_XDISTANCE, xPos + 200);
+   ObjectSetInteger(0, "ChartInfo_THRESH", OBJPROP_YDISTANCE, yPos);
+   ObjectSetString(0, "ChartInfo_THRESH", OBJPROP_TEXT, threshText);
+   ObjectSetInteger(0, "ChartInfo_THRESH", OBJPROP_COLOR, (currentThreshold < Confidence_Threshold) ? clrLime : clrGray);
+   ObjectSetInteger(0, "ChartInfo_THRESH", OBJPROP_FONTSIZE, 9);
+   ObjectSetString(0, "ChartInfo_THRESH", OBJPROP_FONT, "Consolas");
+   ObjectSetInteger(0, "ChartInfo_THRESH", OBJPROP_BACK, false);
+   
+   yPos += lineHeight;
+   
+   string endStatus = "⏳ WAITING";
+   color endColor = clrGray;
+   if(confPercent >= currentThreshold && confPercent > 0)
+   {
+      endStatus = "✅ YES (" + IntegerToString((int)confPercent) + "%)";
+      endColor = clrLime;
+   }
+   else if(confPercent > 0 && confPercent < currentThreshold)
+   {
+      endStatus = "❌ NO (" + IntegerToString((int)confPercent) + "%)";
+      endColor = clrRed;
+   }
+   
+   string statusText = StringFormat("📈 %s | ✅ %s | 🔄 %s | ⚡ %s", 
+                                    status_trend, 
+                                    status_entry, 
+                                    endStatus,
+                                    status_reason);
+   ObjectCreate(0, "ChartInfo_Status", OBJ_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, "ChartInfo_Status", OBJPROP_XDISTANCE, xPos);
+   ObjectSetInteger(0, "ChartInfo_Status", OBJPROP_YDISTANCE, yPos);
+   ObjectSetString(0, "ChartInfo_Status", OBJPROP_TEXT, statusText);
+   ObjectSetInteger(0, "ChartInfo_Status", OBJPROP_COLOR, clrDodgerBlue);
+   ObjectSetInteger(0, "ChartInfo_Status", OBJPROP_FONTSIZE, 9);
+   ObjectSetString(0, "ChartInfo_Status", OBJPROP_FONT, "Consolas");
+   ObjectSetInteger(0, "ChartInfo_Status", OBJPROP_BACK, false);
+   
+   yPos += lineHeight + 2;
+   
+   if(!Enable_Sell_Trades)
+   {
+      ObjectCreate(0, "ChartInfo_SellDisabled", OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, "ChartInfo_SellDisabled", OBJPROP_XDISTANCE, xPos);
+      ObjectSetInteger(0, "ChartInfo_SellDisabled", OBJPROP_YDISTANCE, yPos);
+      ObjectSetString(0, "ChartInfo_SellDisabled", OBJPROP_TEXT, "🔴 SELL TRADES DISABLED");
+      ObjectSetInteger(0, "ChartInfo_SellDisabled", OBJPROP_COLOR, clrRed);
+      ObjectSetInteger(0, "ChartInfo_SellDisabled", OBJPROP_FONTSIZE, 9);
+      ObjectSetString(0, "ChartInfo_SellDisabled", OBJPROP_FONT, "Consolas");
+      ObjectSetInteger(0, "ChartInfo_SellDisabled", OBJPROP_BACK, false);
+      yPos += lineHeight;
+   }
+   
+   if(!Enable_Buy_Trades)
+   {
+      ObjectCreate(0, "ChartInfo_BuyDisabled", OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, "ChartInfo_BuyDisabled", OBJPROP_XDISTANCE, xPos);
+      ObjectSetInteger(0, "ChartInfo_BuyDisabled", OBJPROP_YDISTANCE, yPos);
+      ObjectSetString(0, "ChartInfo_BuyDisabled", OBJPROP_TEXT, "🔴 BUY TRADES DISABLED");
+      ObjectSetInteger(0, "ChartInfo_BuyDisabled", OBJPROP_COLOR, clrRed);
+      ObjectSetInteger(0, "ChartInfo_BuyDisabled", OBJPROP_FONTSIZE, 9);
+      ObjectSetString(0, "ChartInfo_BuyDisabled", OBJPROP_FONT, "Consolas");
+      ObjectSetInteger(0, "ChartInfo_BuyDisabled", OBJPROP_BACK, false);
+      yPos += lineHeight;
+   }
    
    if(has_open_position)
    {
-      text += "╠══════════════════════════════════════════════════════════════════╣\n";
-      text += "║ LOT:       " + PadRight(status_lot, 20) + "║\n";
-      text += "║ P/L:       " + PadRight(status_profit, 20) + "║\n";
+      ObjectCreate(0, "ChartInfo_Sep3", OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, "ChartInfo_Sep3", OBJPROP_XDISTANCE, xPos);
+      ObjectSetInteger(0, "ChartInfo_Sep3", OBJPROP_YDISTANCE, yPos);
+      ObjectSetString(0, "ChartInfo_Sep3", OBJPROP_TEXT, "─── IN TRADE ───");
+      ObjectSetInteger(0, "ChartInfo_Sep3", OBJPROP_COLOR, clrGray);
+      ObjectSetInteger(0, "ChartInfo_Sep3", OBJPROP_FONTSIZE, 8);
+      ObjectSetString(0, "ChartInfo_Sep3", OBJPROP_FONT, "Consolas");
+      ObjectSetInteger(0, "ChartInfo_Sep3", OBJPROP_BACK, false);
+      yPos += lineHeight;
+      
+      string lotText = StringFormat("LOT: %s", status_lot);
+      ObjectCreate(0, "ChartInfo_Lot", OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, "ChartInfo_Lot", OBJPROP_XDISTANCE, xPos);
+      ObjectSetInteger(0, "ChartInfo_Lot", OBJPROP_YDISTANCE, yPos);
+      ObjectSetString(0, "ChartInfo_Lot", OBJPROP_TEXT, lotText);
+      ObjectSetInteger(0, "ChartInfo_Lot", OBJPROP_COLOR, clrCyan);
+      ObjectSetInteger(0, "ChartInfo_Lot", OBJPROP_FONTSIZE, 9);
+      ObjectSetString(0, "ChartInfo_Lot", OBJPROP_FONT, "Consolas");
+      ObjectSetInteger(0, "ChartInfo_Lot", OBJPROP_BACK, false);
+      
+      string plText = StringFormat("P/L: %s", status_profit);
+      color plColor = clrGray;
+      if(StringFind(status_profit, "-") >= 0)
+         plColor = clrRed;
+      else if(StringToDouble(status_profit) > 0)
+         plColor = clrLime;
+      
+      ObjectCreate(0, "ChartInfo_PL", OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, "ChartInfo_PL", OBJPROP_XDISTANCE, xPos + 100);
+      ObjectSetInteger(0, "ChartInfo_PL", OBJPROP_YDISTANCE, yPos);
+      ObjectSetString(0, "ChartInfo_PL", OBJPROP_TEXT, plText);
+      ObjectSetInteger(0, "ChartInfo_PL", OBJPROP_COLOR, plColor);
+      ObjectSetInteger(0, "ChartInfo_PL", OBJPROP_FONTSIZE, 9);
+      ObjectSetString(0, "ChartInfo_PL", OBJPROP_FONT, "Consolas");
+      ObjectSetInteger(0, "ChartInfo_PL", OBJPROP_BACK, false);
+      
+      string dirText = StringFormat("DIR: %s", status_in_trade == "YES" ? (current_trade_direction == TREND_UP ? "▲ BUY" : "▼ SELL") : "NONE");
+      ObjectCreate(0, "ChartInfo_Dir", OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, "ChartInfo_Dir", OBJPROP_XDISTANCE, xPos + 200);
+      ObjectSetInteger(0, "ChartInfo_Dir", OBJPROP_YDISTANCE, yPos);
+      ObjectSetString(0, "ChartInfo_Dir", OBJPROP_TEXT, dirText);
+      ObjectSetInteger(0, "ChartInfo_Dir", OBJPROP_COLOR, current_trade_direction == TREND_UP ? clrLime : clrRed);
+      ObjectSetInteger(0, "ChartInfo_Dir", OBJPROP_FONTSIZE, 9);
+      ObjectSetString(0, "ChartInfo_Dir", OBJPROP_FONT, "Consolas");
+      ObjectSetInteger(0, "ChartInfo_Dir", OBJPROP_BACK, false);
    }
-   
-   text += "╚══════════════════════════════════════════════════════════════════╝";
-   Comment(text);
-}
-
-//+------------------------------------------------------------------+
-//| Helper function to pad string                                    |
-//+------------------------------------------------------------------+
-string PadRight(string text, int width)
-{
-   if(StringLen(text) >= width)
-      return text;
-   
-   string result = text;
-   for(int i = StringLen(text); i < width; i++)
-      result += " ";
-   return result;
 }
 
 //+------------------------------------------------------------------+
@@ -960,6 +1809,7 @@ void DrawSwingHighLow(MqlRates &rates[])
       ObjectSetInteger(0, "SwingHigh_NoData", OBJPROP_FONTSIZE, 10);
       ObjectSetInteger(0, "SwingHigh_NoData", OBJPROP_ANCHOR, ANCHOR_LEFT);
       ObjectSetString(0, "SwingHigh_NoData", OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, "SwingHigh_NoData", OBJPROP_BACK, false);
       return;
    }
    
@@ -1011,6 +1861,7 @@ void DrawSwingHighLow(MqlRates &rates[])
       ObjectSetInteger(0, "SwingHigh_Label", OBJPROP_FONTSIZE, 9);
       ObjectSetInteger(0, "SwingHigh_Label", OBJPROP_ANCHOR, ANCHOR_LEFT);
       ObjectSetString(0, "SwingHigh_Label", OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, "SwingHigh_Label", OBJPROP_BACK, false);
    }
    
    if(ObjectCreate(0, "SwingLow_Label", OBJ_TEXT, 0, low_time, low - label_offset))
@@ -1020,6 +1871,7 @@ void DrawSwingHighLow(MqlRates &rates[])
       ObjectSetInteger(0, "SwingLow_Label", OBJPROP_FONTSIZE, 9);
       ObjectSetInteger(0, "SwingLow_Label", OBJPROP_ANCHOR, ANCHOR_LEFT);
       ObjectSetString(0, "SwingLow_Label", OBJPROP_FONT, "Arial Bold");
+      ObjectSetInteger(0, "SwingLow_Label", OBJPROP_BACK, false);
    }
 }
 
@@ -1040,6 +1892,7 @@ void ClosePosition()
       positionTicket = 0;
       current_trade_direction = TREND_NONE;
       CleanupProfitTrackers();
+      trade_signature_display = "";
    }
 }
 
@@ -1136,381 +1989,174 @@ void DetectRange(MqlRates &rates[])
 }
 
 //+------------------------------------------------------------------+
-//| Calculate Pullback Score                                         |
+//| Calculate Structure Stop Loss - STRUCTURE BASED ONLY            |
 //+------------------------------------------------------------------+
-int CalculatePullbackScore(double pullback_percent)
-{
-   if(pullback_percent < 25.0 || pullback_percent > 85.0)
-      return 0;
-   
-   if(pullback_percent >= 25.0 && pullback_percent <= 38.2)
-      return 30;
-   else if(pullback_percent > 38.2 && pullback_percent <= 50.0)
-      return 35;
-   else if(pullback_percent > 50.0 && pullback_percent <= 61.8)
-      return 30;
-   else if(pullback_percent > 61.8 && pullback_percent <= 78.6)
-      return 20;
-   else if(pullback_percent > 78.6 && pullback_percent <= 85.0)
-      return 15;
-   
-   return 0;
-}
-
-//+------------------------------------------------------------------+
-//| Get Pullback Description                                         |
-//+------------------------------------------------------------------+
-string GetPullbackDescription(double pullback_percent)
-{
-   if(pullback_percent >= 25.0 && pullback_percent <= 38.2)
-      return "EARLY ZONE (25-38.2%)";
-   else if(pullback_percent > 38.2 && pullback_percent <= 50.0)
-      return "GOLDEN ZONE (38.2-50%)";
-   else if(pullback_percent > 50.0 && pullback_percent <= 61.8)
-      return "GOOD ZONE (50-61.8%)";
-   else if(pullback_percent > 61.8 && pullback_percent <= 78.6)
-      return "DEEP ZONE (61.8-78.6%)";
-   else if(pullback_percent > 78.6 && pullback_percent <= 85.0)
-      return "RISKY ZONE (78.6-85%)";
-   else if(pullback_percent < 25.0)
-      return "TOO SHALLOW (<25%)";
-   else if(pullback_percent > 85.0)
-      return "TOO DEEP (>85%)";
-   return "UNKNOWN";
-}
-
-//+------------------------------------------------------------------+
-//| Calculate ADX Score                                              |
-//+------------------------------------------------------------------+
-int CalculateADXScore(double adx_main, double adx_plus, double adx_minus, ENUM_TREND_DIRECTION trend)
-{
-   int score = 0;
-   int level = 0;
-   
-   if(adx_main >= 50)
-   {
-      score = 12;
-      level = 5;
-   }
-   else if(adx_main >= 40)
-   {
-      score = 10;
-      level = 4;
-   }
-   else if(adx_main >= 30)
-   {
-      score = 8;
-      level = 3;
-   }
-   else if(adx_main >= 25)
-   {
-      score = 5;
-      level = 2;
-   }
-   else if(adx_main >= 20)
-   {
-      score = 3;
-      level = 1;
-   }
-   else
-   {
-      score = 0;
-      level = 0;
-   }
-   
-   bool aligned = false;
-   if(trend == TREND_UP && adx_plus > adx_minus)
-      aligned = true;
-   else if(trend == TREND_DOWN && adx_minus > adx_plus)
-      aligned = true;
-   
-   if(aligned)
-   {
-      if(level >= 4)
-         score += 3;
-      else if(level >= 3)
-         score += 2;
-      else if(level >= 2)
-         score += 1;
-      else if(level >= 1)
-         score += 1;
-   }
-   
-   return MathMin(15, score);
-}
-
-//+------------------------------------------------------------------+
-//| Calculate Volume Score - FIXED using iVolume                     |
-//+------------------------------------------------------------------+
-int CalculateVolumeScore(int period, double &ratio)
-{
-   // Get current volume
-   long current_vol = iVolume(_Symbol, Entry_Timeframe, 0);
-   
-   if(current_vol <= 0)
-   {
-      ratio = 1.0;
-      return 4;  // Default score when no volume data
-   }
-   
-   // Calculate average volume
-   double avg_volume = 0;
-   int count = 0;
-   
-   for(int i = 1; i <= period; i++)
-   {
-      long vol = iVolume(_Symbol, Entry_Timeframe, i);
-      if(vol > 0)
-      {
-         avg_volume += (double)vol;
-         count++;
-      }
-   }
-   
-   if(count == 0 || avg_volume == 0)
-   {
-      ratio = 1.0;
-      return 4;
-   }
-   
-   avg_volume /= count;
-   ratio = (double)current_vol / avg_volume;
-   
-   // Score based on volume ratio
-   if(ratio >= 2.5) return 15;
-   if(ratio >= 1.8) return 13;
-   if(ratio >= 1.4) return 10;
-   if(ratio >= 1.1) return 7;
-   if(ratio >= 0.8) return 4;
-   return 0;
-}
-
-//+------------------------------------------------------------------+
-//| Calculate Pattern Score                                          |
-//+------------------------------------------------------------------+
-int CalculatePatternScore(MqlRates &rates[], ENUM_TREND_DIRECTION trend)
-{
-    if(ArraySize(rates) < 2) return 0;
-    
-    double body = MathAbs(rates[0].close - rates[0].open);
-    double lower_wick = MathMin(rates[0].close, rates[0].open) - rates[0].low;
-    double upper_wick = rates[0].high - MathMax(rates[0].close, rates[0].open);
-    double candle_range = rates[0].high - rates[0].low;
-    
-    if(candle_range == 0 || body == 0) return 0;
-    
-    bool bullish_engulfing = false;
-    if(rates[1].close < rates[1].open && rates[0].close > rates[0].open)
-    {
-        if(rates[0].close > rates[1].open && rates[0].open < rates[1].close)
-            bullish_engulfing = true;
-    }
-    
-    bool hammer = (lower_wick > body * 2.0 && upper_wick < body * 0.5);
-    bool bullish_pinbar = (lower_wick > body * 2.5 && upper_wick < body * 0.3);
-    
-    bool bearish_engulfing = false;
-    if(rates[1].close > rates[1].open && rates[0].close < rates[0].open)
-    {
-        if(rates[0].close < rates[1].open && rates[0].open > rates[1].close)
-            bearish_engulfing = true;
-    }
-    
-    bool shooting_star = (upper_wick > body * 2.0 && lower_wick < body * 0.5);
-    bool bearish_pinbar = (upper_wick > body * 2.5 && lower_wick < body * 0.3);
-    
-    if(trend == TREND_UP)
-    {
-        if(bullish_engulfing)
-            return 10;
-        else if(hammer || bullish_pinbar)
-            return 8;
-        else if(rates[0].close > rates[0].open && body > MathAbs(rates[1].close - rates[1].open) * 1.5)
-            return 5;
-        else if(rates[0].close > rates[0].open)
-            return 3;
-    }
-    else if(trend == TREND_DOWN)
-    {
-        if(bearish_engulfing)
-            return 10;
-        else if(shooting_star || bearish_pinbar)
-            return 8;
-        else if(rates[0].close < rates[0].open && body > MathAbs(rates[1].close - rates[1].open) * 1.5)
-            return 5;
-        else if(rates[0].close < rates[0].open)
-            return 3;
-    }
-    
-    return 0;
-}
-
-//+------------------------------------------------------------------+
-//| Get Volume Description                                           |
-//+------------------------------------------------------------------+
-string GetVolumeDescription(double ratio)
-{
-    if(ratio >= 2.5) return "EXTREME";
-    if(ratio >= 1.8) return "VERY HIGH";
-    if(ratio >= 1.4) return "HIGH";
-    if(ratio >= 1.1) return "ABOVE AVG";
-    if(ratio >= 0.8) return "AVERAGE";
-    return "LOW";
-}
-
-//+------------------------------------------------------------------+
-//| Get Pattern Description                                          |
-//+------------------------------------------------------------------+
-string GetPatternDescription(MqlRates &rates[], ENUM_TREND_DIRECTION trend)
-{
-    if(ArraySize(rates) < 2) return "NONE";
-    
-    double body = MathAbs(rates[0].close - rates[0].open);
-    double lower_wick = MathMin(rates[0].close, rates[0].open) - rates[0].low;
-    double upper_wick = rates[0].high - MathMax(rates[0].close, rates[0].open);
-    double candle_range = rates[0].high - rates[0].low;
-    
-    if(candle_range == 0 || body == 0) return "DOJI";
-    
-    bool bullish_engulfing = (rates[1].close < rates[1].open && 
-                              rates[0].close > rates[0].open &&
-                              rates[0].close > rates[1].open && 
-                              rates[0].open < rates[1].close);
-    
-    bool bearish_engulfing = (rates[1].close > rates[1].open && 
-                              rates[0].close < rates[0].open &&
-                              rates[0].close < rates[1].open && 
-                              rates[0].open > rates[1].close);
-    
-    bool hammer = (lower_wick > body * 2.0 && upper_wick < body * 0.5);
-    bool shooting_star = (upper_wick > body * 2.0 && lower_wick < body * 0.5);
-    bool bullish_pinbar = (lower_wick > body * 2.5 && upper_wick < body * 0.3);
-    bool bearish_pinbar = (upper_wick > body * 2.5 && lower_wick < body * 0.3);
-    
-    if(trend == TREND_UP)
-    {
-        if(bullish_engulfing) return "BULLISH ENGULFING";
-        if(hammer) return "HAMMER";
-        if(bullish_pinbar) return "BULLISH PINBAR";
-        if(rates[0].close > rates[0].open) return "BULLISH CANDLE";
-    }
-    else if(trend == TREND_DOWN)
-    {
-        if(bearish_engulfing) return "BEARISH ENGULFING";
-        if(shooting_star) return "SHOOTING STAR";
-        if(bearish_pinbar) return "BEARISH PINBAR";
-        if(rates[0].close < rates[0].open) return "BEARISH CANDLE";
-    }
-    
-    return "NONE";
-}
-
-//+------------------------------------------------------------------+
-//| Get ADX Level Label                                              |
-//+------------------------------------------------------------------+
-string GetADXLevelLabel(double adx_main)
-{
-   if(adx_main >= 50)
-      return "EXTREME";
-   else if(adx_main >= 40)
-      return "STRONG";
-   else if(adx_main >= 30)
-      return "GOOD";
-   else if(adx_main >= 25)
-      return "MODERATE";
-   else if(adx_main >= 20)
-      return "WEAK";
-   else
-      return "NONE";
-}
-
-//+------------------------------------------------------------------+
-//| Calculate Optimal Stop Loss                                      |
-//+------------------------------------------------------------------+
-double CalculateOptimalSL(ENUM_TREND_DIRECTION trend, double entry_price, double tp_price,
-                          double current_ma_fast, double atr_value, double target_rr,
-                          MqlRates &rates[])
+double CalculateStructureSL(ENUM_TREND_DIRECTION trend, double entry_price,
+                            MqlRates &rates[], double atr_value)
 {
    double sl_price = 0;
-   
-   double reward = MathAbs(tp_price - entry_price);
-   double tp_based_risk = reward / target_rr;
-   double tp_based_sl = 0;
-   
-   if(trend == TREND_UP)
-      tp_based_sl = entry_price - tp_based_risk;
-   else if(trend == TREND_DOWN)
-      tp_based_sl = entry_price + tp_based_risk;
-   
-   double structure_sl = 0;
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    
    if(trend == TREND_UP)
    {
-      double sl_ma_fast = current_ma_fast - (atr_value * 0.5);
-      
-      double recent_low = rates[0].low;
-      for(int i = 1; i < SL_Structure_Bars; i++)
+      double lowest_low = rates[0].low;
+      for(int i = 1; i < SL_Structure_Bars && i < ArraySize(rates); i++)
       {
-         if(rates[i].low < recent_low)
-            recent_low = rates[i].low;
+         if(rates[i].low < lowest_low)
+            lowest_low = rates[i].low;
       }
-      double sl_structure = recent_low - (atr_value * 0.4);
       
-      structure_sl = MathMax(sl_ma_fast, sl_structure) - (atr_value * 0.15);
-      sl_price = MathMax(structure_sl, tp_based_sl);
+      sl_price = lowest_low - (atr_value * SL_ATR_Multiplier);
+      
+      double min_distance = Min_SL_Distance * point;
+      double min_allowed_sl = entry_price - min_distance;
+      if(sl_price > min_allowed_sl)
+         sl_price = min_allowed_sl;
+      
+      double max_allowed_sl = entry_price - (atr_value * Max_SL_ATR);
+      if(sl_price < max_allowed_sl)
+         sl_price = max_allowed_sl;
    }
    else if(trend == TREND_DOWN)
    {
-      double sl_ma_fast = current_ma_fast + (atr_value * 0.5);
-      
-      double recent_high = rates[0].high;
-      for(int i = 1; i < SL_Structure_Bars; i++)
+      double highest_high = rates[0].high;
+      for(int i = 1; i < SL_Structure_Bars && i < ArraySize(rates); i++)
       {
-         if(rates[i].high > recent_high)
-            recent_high = rates[i].high;
+         if(rates[i].high > highest_high)
+            highest_high = rates[i].high;
       }
-      double sl_structure = recent_high + (atr_value * 0.4);
       
-      structure_sl = sl_structure + (atr_value * 0.15);
-      sl_price = MathMin(structure_sl, tp_based_sl);
+      sl_price = highest_high + (atr_value * SL_ATR_Multiplier);
+      
+      double min_distance = Min_SL_Distance * point;
+      double min_allowed_sl = entry_price + min_distance;
+      if(sl_price < min_allowed_sl)
+         sl_price = min_allowed_sl;
+      
+      double max_allowed_sl = entry_price + (atr_value * Max_SL_ATR);
+      if(sl_price > max_allowed_sl)
+         sl_price = max_allowed_sl;
    }
    
+   sl_price = NormalizeDouble(sl_price, _Digits);
    return sl_price;
 }
 
 //+------------------------------------------------------------------+
-//| Calculate Dynamic Lot Size - FIXED at 0.01                      |
+//| Calculate Take Profit - 2x Risk (2R)                             |
 //+------------------------------------------------------------------+
-double CalculateLotSize()
+double Calculate2R_TP(ENUM_TREND_DIRECTION trend, double entry_price, double sl_price)
 {
-   return 0.01;
+   double risk = MathAbs(entry_price - sl_price);
+   double tp_price = 0;
+   
+   if(trend == TREND_UP)
+   {
+      tp_price = entry_price + (risk * Target_RR);
+   }
+   else if(trend == TREND_DOWN)
+   {
+      tp_price = entry_price - (risk * Target_RR);
+   }
+   
+   tp_price = NormalizeDouble(tp_price, _Digits);
+   return tp_price;
+}
+
+//+------------------------------------------------------------------+
+//| Calculate Dynamic Lot Size - ACCOUNT BASED - FIXED              |
+//+------------------------------------------------------------------+
+double CalculateDynamicLotSize(double entry_price, double sl_price)
+{
+   double accountBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double riskAmount = accountBalance * (Risk_Per_Trade_Pct / 100.0);
+   
+   double slDistance = MathAbs(entry_price - sl_price);
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   
+   if(slDistance <= 0 || point <= 0) return Min_Lot_Size;
+   
+   //--- For XAUUSD: 1 point = $0.01 per 0.01 lot = $1.00 per 1 lot
+   double slPoints = slDistance / point; // Number of points in SL
+   double valuePerPointPerLot = 1.0; // $1.00 per point per 1 lot (XAUUSD)
+   
+   //--- Lot size = Risk / (SL_points * value_per_point_per_lot)
+   double lotSize = riskAmount / (slPoints * valuePerPointPerLot);
+   
+   //--- Account-based scaling (graduated sizing)
+   double maxAllowed = 0;
+   if(accountBalance <= 50)      maxAllowed = 0.02;
+   else if(accountBalance <= 100) maxAllowed = 0.05;
+   else if(accountBalance <= 200) maxAllowed = 0.10;
+   else if(accountBalance <= 500) maxAllowed = 0.30;
+   else if(accountBalance <= 1000) maxAllowed = 0.50;
+   else                           maxAllowed = 1.00;
+   
+   //--- Apply limits
+   lotSize = MathMax(Min_Lot_Size, MathMin(maxAllowed, lotSize));
+   lotSize = MathMin(Max_Lot_Size, lotSize);
+   
+   //--- Round to valid lot step
+   double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   if(lotStep > 0)
+      lotSize = MathFloor(lotSize / lotStep) * lotStep;
+   
+   lotSize = MathMax(Min_Lot_Size, lotSize);
+   lotSize = MathMin(Max_Lot_Size, lotSize);
+   
+   //--- Debug logging
+   if(Enable_Logging)
+   {
+      Print("=== LOT SIZE CALCULATION ===");
+      Print("Account Balance: $" + DoubleToString(accountBalance, 2));
+      Print("Risk %: " + DoubleToString(Risk_Per_Trade_Pct, 1) + "%");
+      Print("Risk Amount: $" + DoubleToString(riskAmount, 2));
+      Print("SL Distance: " + DoubleToString(slDistance, _Digits) + " (" + DoubleToString(slPoints, 1) + " points)");
+      Print("Calculated Lot: " + DoubleToString(lotSize, 2));
+      Print("Max Allowed: " + DoubleToString(maxAllowed, 2));
+      Print("=============================");
+   }
+   
+   return lotSize;
 }
 
 //+------------------------------------------------------------------+
 //| Execute Trade                                                    |
 //+------------------------------------------------------------------+
 void ExecuteTrade(ENUM_TREND_DIRECTION trend, double entry_price, double sl_price, double tp_price,
-                  int total_confidence, int pullback_score, int mtf_score, int adx_score,
-                  int vol_score, int pat_score,
+                  int total_confidence, int pullback_score, int mtf_score,
+                  int rsi_score_val, int macd_score_val, int alignment_score,
                   string pullback_desc, string mtf_desc, 
-                  string volume_desc, string pattern_desc, string price_pos_desc,
-                  bool is_rejected = false, string reject_reason = "")
+                  string price_pos_desc,
+                  string alignment_desc,
+                  bool is_rejected = false, string reject_reason = "",
+                  bool boost_active = false)
 {
+   if(trend == TREND_UP && !Enable_Buy_Trades)
+   {
+      status_reason = "BUY TRADES DISABLED";
+      status_progress = "DISABLED";
+      LogMessage("🚫 BUY TRADES DISABLED - Trade rejected");
+      return;
+   }
+   
+   if(trend == TREND_DOWN && !Enable_Sell_Trades)
+   {
+      status_reason = "SELL TRADES DISABLED";
+      status_progress = "DISABLED";
+      LogMessage("🚫 SELL TRADES DISABLED - Trade rejected");
+      return;
+   }
+   
    double pb_pct = ((trend == TREND_UP) ? 
                      (range_high - entry_price) / (range_high - range_low) * 100 : 
                      (entry_price - range_low) / (range_high - range_low) * 100);
    
-   // Store MTF score for signature (convert to percentage)
-   mtf_total_score = (int)((double)mtf_score / 40.0 * 100);
-   
-   // Get current ADX and Volume values for the signature
-   double current_adx = adx_score;  // Use the ADX score value
-   double current_volume_ratio = volume_ratio;  // Use the global volume_ratio
-   
+   mtf_total_score = (int)((double)mtf_score / 45.0 * 100);
+  
    if(is_rejected)
    {
-      StoreFailedTrade(entry_price, trend, reject_reason, total_confidence, pb_pct, 
-                       current_adx, current_volume_ratio);
+      LogMessage("🚫 Trade rejected: " + reject_reason);
       return;
    }
    
@@ -1531,8 +2177,7 @@ void ExecuteTrade(ENUM_TREND_DIRECTION trend, double entry_price, double sl_pric
    {
       status_reason = "MAX POSITIONS REACHED";
       status_progress = "LIMIT";
-      StoreFailedTrade(entry_price, trend, "Max Positions", total_confidence, pb_pct,
-                       current_adx, current_volume_ratio);
+      LogMessage("🚫 Max positions reached - Trade rejected");
       return;
    }
    
@@ -1540,8 +2185,7 @@ void ExecuteTrade(ENUM_TREND_DIRECTION trend, double entry_price, double sl_pric
    {
       status_reason = "DAILY LIMIT REACHED";
       status_progress = "LIMIT";
-      StoreFailedTrade(entry_price, trend, "Daily Limit", total_confidence, pb_pct,
-                       current_adx, current_volume_ratio);
+      LogMessage("🚫 Daily limit reached - Trade rejected");
       return;
    }
    
@@ -1549,16 +2193,26 @@ void ExecuteTrade(ENUM_TREND_DIRECTION trend, double entry_price, double sl_pric
    double reward = MathAbs(tp_price - entry_price);
    double rr_ratio = reward / risk;
    
-   if(rr_ratio < MinRR)
+   double lot_size = CalculateDynamicLotSize(entry_price, sl_price);
+   
+   double accountBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double riskAmount = accountBalance * (Risk_Per_Trade_Pct / 100.0);
+   
+   LogMessage("📊 POSITION SIZING:");
+   LogMessage("   Account Balance: $" + DoubleToString(accountBalance, 2));
+   LogMessage("   Risk %: " + DoubleToString(Risk_Per_Trade_Pct, 1) + "%");
+   LogMessage("   Risk Amount: $" + DoubleToString(riskAmount, 2));
+   LogMessage("   Calculated Lot: " + DoubleToString(lot_size, 2));
+   LogMessage("   SL Distance: " + DoubleToString(risk, _Digits) + " points");
+   LogMessage("   RR: " + DoubleToString(rr_ratio, 2) + ":1");
+   
+   if(rr_ratio < 1.0)
    {
       status_reason = "RR TOO LOW (" + DoubleToString(rr_ratio, 2) + ")";
       status_progress = "REJECTED: RR";
-      StoreFailedTrade(entry_price, trend, "RR " + DoubleToString(rr_ratio, 2), total_confidence, pb_pct,
-                       current_adx, current_volume_ratio);
+      LogMessage("🚫 RR too low: " + DoubleToString(rr_ratio, 2));
       return;
    }
-   
-   double lot_size = CalculateLotSize();
    
    CTrade trade;
    trade.SetExpertMagicNumber(12345);
@@ -1568,13 +2222,37 @@ void ExecuteTrade(ENUM_TREND_DIRECTION trend, double entry_price, double sl_pric
    string type_str = "";
    bool success = false;
    
+   string direction_indicator = (trend == TREND_UP) ? "▲BUY" : "▼SELL";
+   string boost_indicator = boost_active ? "⚡" : "";
+   
+   string rsi_compact = StringFormat("RSI:%d/10(%s%.0f%%)", 
+                                     rsi_score_val,
+                                     rsi_display_pct >= 50 ? "📈" : "📉",
+                                     rsi_display_pct >= 50 ? rsi_display_pct : rsi_display_pct);
+   
+   string macd_compact = StringFormat("MCD:%d/15(%s%.0f%%)", 
+                                      macd_score_val,
+                                      macd_display_pct >= 50 ? "📈" : "📉",
+                                      macd_display_pct >= 50 ? macd_display_pct : macd_display_pct);
+   
+   string comment = StringFormat("%s%s|PB:%.0f%%|MTF:%d/45|AL:%d/5|%s|%s|C:%d%%|LOT:%.2f",
+                                  boost_indicator,
+                                  direction_indicator,
+                                  pb_pct,
+                                  mtf_score,
+                                  alignment_score,
+                                  rsi_compact,
+                                  macd_compact,
+                                  total_confidence,
+                                  lot_size);
+   
    if(trend == TREND_UP)
    {
       price = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
       sl = sl_price;
       tp = tp_price;
       type_str = "BUY";
-      success = trade.Buy(lot_size, _Symbol, price, sl, tp, "DayTrade_Buy");
+      success = trade.Buy(lot_size, _Symbol, price, sl, tp, comment);
    }
    else
    {
@@ -1582,7 +2260,7 @@ void ExecuteTrade(ENUM_TREND_DIRECTION trend, double entry_price, double sl_pric
       sl = sl_price;
       tp = tp_price;
       type_str = "SELL";
-      success = trade.Sell(lot_size, _Symbol, price, sl, tp, "DayTrade_Sell");
+      success = trade.Sell(lot_size, _Symbol, price, sl, tp, comment);
    }
    
    if(success)
@@ -1594,34 +2272,39 @@ void ExecuteTrade(ENUM_TREND_DIRECTION trend, double entry_price, double sl_pric
       daily_trades++;
       
       StoreSuccessfulTrade(price, trend, total_confidence, pb_pct,
-                           current_adx, current_volume_ratio);
+                           pullback_score, alignment_score, mtf_score, 
+                           rsi_score_val, macd_score_val);
       
       InitializeProfitTracker(positionTicket);
       ObjectsDeleteAll(0, "Pullback_");
       
       string confidence_label = "";
-      if(total_confidence >= 90)
+      if(total_confidence >= 85)
          confidence_label = "VERY HIGH";
-      else if(total_confidence >= 80)
-         confidence_label = "HIGH";
       else if(total_confidence >= 70)
-         confidence_label = "GOOD";
+         confidence_label = "HIGH";
       else if(total_confidence >= 60)
-         confidence_label = "MODERATE";
+         confidence_label = "GOOD";
       else if(total_confidence >= 50)
+         confidence_label = "MODERATE";
+      else if(total_confidence >= 40)
          confidence_label = "LOW";
       else
          confidence_label = "VERY LOW";
       
       status_in_trade = "YES";
-      status_reason = type_str + " OPENED";
-      status_progress = type_str + " @ " + DoubleToString(price, _Digits);
+      status_reason = type_str + " OPENED" + (boost_active ? " ⚡BOOST" : "");
+      status_progress = type_str + " @ " + DoubleToString(price, _Digits) + 
+                        " | LOT: " + DoubleToString(lot_size, 2);
       status_confidence = IntegerToString(total_confidence) + "/100 (" + confidence_label + ")";
       status_lot = DoubleToString(lot_size, 2);
       status_rr = DoubleToString(rr_ratio, 2) + ":1";
       
+      UpdateTradeSignatureDisplay();
+      
       LogMessage("=========================================");
       LogMessage("   🟢 DAY TRADE ENTERED   ");
+      if(boost_active) LogMessage("   ⚡ BOOST ACTIVE - REDUCED THRESHOLD");
       LogMessage("=========================================");
       LogMessage("Type: " + type_str);
       LogMessage("Ticket: " + IntegerToString(positionTicket));
@@ -1630,7 +2313,13 @@ void ExecuteTrade(ENUM_TREND_DIRECTION trend, double entry_price, double sl_pric
       LogMessage("TP: " + DoubleToString(tp, _Digits));
       LogMessage("RR: " + DoubleToString(rr_ratio, 2) + ":1");
       LogMessage("Lot Size: " + DoubleToString(lot_size, 2));
+      LogMessage("Account Balance: $" + DoubleToString(accountBalance, 2));
+      LogMessage("Risk %: " + DoubleToString(Risk_Per_Trade_Pct, 1) + "%");
       LogMessage("Daily Trades: " + IntegerToString(daily_trades) + "/" + IntegerToString(Max_Daily_Trades));
+      LogMessage("Trade Comment: " + comment);
+      LogMessage("--- 📊 Entry RSI/MACD Status ---");
+      LogMessage("RSI: " + DoubleToString(rsi_display_pct, 0) + "% (" + status_rsi + ")");
+      LogMessage("MACD: " + DoubleToString(macd_display_pct, 0) + "% (" + status_macd + ")");
       
       LogMessage("--- 🎯 Entry Reasons ---");
       LogMessage("Trend: " + (string)((trend_bias == TREND_UP) ? "BULLISH (H1>MA60)" : "BEARISH (H1<MA60)"));
@@ -1640,11 +2329,11 @@ void ExecuteTrade(ENUM_TREND_DIRECTION trend, double entry_price, double sl_pric
       LogMessage("Price Position: " + price_pos_desc);
       
       LogMessage("--- 📊 Confidence Score: " + IntegerToString(total_confidence) + "/100 (" + confidence_label + ") ---");
-      LogMessage("📈 Pullback Score: " + IntegerToString(pullback_score) + "/30 - " + pullback_desc);
-      LogMessage("📊 MTF Score: " + IntegerToString(mtf_score) + "/40 - " + mtf_desc);
-      LogMessage("📉 ADX Score: " + IntegerToString(adx_score) + "/15");
-      LogMessage("📊 Volume Score: " + IntegerToString(vol_score) + "/10 - " + volume_desc);
-      LogMessage("📐 Pattern Score: " + IntegerToString(pat_score) + "/5 - " + pattern_desc);
+      LogMessage("📊 MTF Score: " + IntegerToString(mtf_score) + "/45 - " + mtf_desc + " (PRIMARY)");
+      LogMessage("📈 Pullback Score: " + IntegerToString(pullback_score) + "/25 - " + pullback_desc + " (ENTRY TRIGGER)");
+      LogMessage("📊 MACD Score: " + IntegerToString(macd_score_val) + "/15 - Display: " + DoubleToString(macd_display_pct, 0) + "% (MOMENTUM)");
+      LogMessage("📊 RSI Score: " + IntegerToString(rsi_score_val) + "/10 - Display: " + DoubleToString(rsi_display_pct, 0) + "% (MOMENTUM)");
+      LogMessage("🔗 Alignment Score: " + IntegerToString(alignment_score) + "/5 - " + alignment_desc + " (SUPPORTING)");
       LogMessage("=========================================");
    }
    else
@@ -1654,285 +2343,6 @@ void ExecuteTrade(ENUM_TREND_DIRECTION trend, double entry_price, double sl_pric
       status_progress = "FAILED";
       LogMessage("=== TRADE FAILED ===");
       LogMessage("Error: " + IntegerToString(error), true);
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Detect Pullback And Execute                                      |
-//+------------------------------------------------------------------+
-void DetectPullbackAndExecute(MqlRates &rates[], MqlRates &rates_h1[], MqlRates &rates_d1[],
-                              double &ma_fast[], double &ma_slow[], double &ma_trend[],
-                              double &ma_h1_50[], double &ma_h1_21[], 
-                              double &ma_m15_50[], double &ma_m15_21[], 
-                              double current_ma120_m15,
-                              double &ma_d1_89[],
-                              double &atr[], double &adx_main[], double &adx_plus[], double &adx_minus[])
-{
-   double current_price = rates[0].close;
-   double current_ma_fast = ma_fast[0];
-   double current_ma_slow = ma_slow[0];
-   double current_ma_trend = ma_trend[0];
-   double current_atr = atr[0];
-   double current_adx = adx_main[0];
-   double current_adx_plus = adx_plus[0];
-   double current_adx_minus = adx_minus[0];
-   
-   //--- STEP 1 + 2: Determine if H1 and M15 align
-   ENUM_TREND_DIRECTION final_trend = TREND_NONE;
-   
-   if(trend_bias == TREND_UP && trend_entry == TREND_UP)
-      final_trend = TREND_UP;
-   else if(trend_bias == TREND_DOWN && trend_entry == TREND_DOWN)
-      final_trend = TREND_DOWN;
-   
-   if(final_trend == TREND_NONE)
-   {
-      if(!has_open_position)
-      {
-         if(trend_bias == TREND_NONE)
-            status_reason = "NO H1 TREND";
-         else if(trend_entry == TREND_NONE)
-            status_reason = "AT MA120";
-         else
-            status_reason = "TREND MISMATCH";
-      }
-      return;
-   }
-   
-   //--- STEP 3: Range + Pullback Detection
-   double swing_high = rates[0].high;
-   double swing_low = rates[0].low;
-   for(int i = 1; i < Range_Period && i < ArraySize(rates); i++)
-   {
-      if(rates[i].high > swing_high) swing_high = rates[i].high;
-      if(rates[i].low < swing_low) swing_low = rates[i].low;
-   }
-   
-   if(swing_high <= swing_low) return;
-   
-   double pullback_percent = 0;
-   double entry_price = 0;
-   double tp_price = 0;
-   double sl_price = 0;
-   bool is_pullback = false;
-   int pullback_score = 0;
-   int mtf_score = 0;
-   int adx_score = 0;
-   int total_confidence = 0;
-   
-   //--- Get pullback ranges based on direction
-   double pullback_min = GetPullbackMin(final_trend);
-   double pullback_max = GetPullbackMax(final_trend);
-   
-   //--- Bullish: Pullback detection using BUY range (TP at swing high)
-   if(final_trend == TREND_UP && current_price < swing_high)
-   {
-      pullback_percent = (swing_high - current_price) / (swing_high - swing_low);
-      if(pullback_percent >= pullback_min && pullback_percent <= pullback_max)
-      {
-         is_pullback = true;
-         entry_price = current_price;
-         tp_price = swing_high;  // BUY: Full TP at swing high
-      }
-   }
-   //--- Bearish: Pullback detection using SELL range (TP at 95% of swing low)
-   else if(final_trend == TREND_DOWN && current_price > swing_low)
-   {
-      pullback_percent = (current_price - swing_low) / (swing_high - swing_low);
-      if(pullback_percent >= pullback_min && pullback_percent <= pullback_max)
-      {
-         is_pullback = true;
-         entry_price = current_price;
-         // SELL: Target at 95% of the swing low (not full TP)
-         tp_price = swing_low + (swing_high - swing_low) * 0.05;
-      }
-   }
-   
-   double pb_pct = pullback_percent * 100;
-   string pullback_zone = GetPullbackZoneDescription(pb_pct);
-   status_pullback = pullback_zone;
-   
-   if(is_pullback && !has_open_position)
-   {
-      //--- Calculate all scores
-      pullback_score = CalculatePullbackScore(pb_pct);
-      adx_score = CalculateADXScore(current_adx, current_adx_plus, current_adx_minus, final_trend);
-      
-      double vol_ratio = 0;
-      volume_score = CalculateVolumeScore(Volume_Period, vol_ratio);
-      volume_ratio = vol_ratio;  // Sets the global variable
-      pattern_score = CalculatePatternScore(rates, final_trend);
-      
-      //--- STEP 4 + 5: MTF Score (0-40) - INBUILT SYSTEM
-      string h1_desc, m15_desc, d1_desc;
-      mtf_score = CalculateUnifiedMTFScore(final_trend,
-                                           rates_h1[0].close, current_ma_trend, ma_h1_21[0], ma_h1_50[0],
-                                           rates_h1[0].close, rates_h1[0].open, rates_h1[1].close, rates_h1[1].open,
-                                           current_price, current_ma_fast, ma_m15_21[0], ma_m15_50[0], current_ma120_m15,
-                                           rates_d1[0].close, ma_d1_89[0], current_atr,
-                                           h1_desc, m15_desc, d1_desc);
-      
-      mtf_total_score = mtf_score;
-      string mtf_desc = h1_desc + " | " + m15_desc + " | " + d1_desc;
-      
-      //--- STEP 6: Total Confidence (0-100)
-      total_confidence = pullback_score + mtf_score + adx_score + volume_score + pattern_score;
-      status_confidence = IntegerToString(total_confidence) + "/100";
-      
-      //--- Get threshold based on direction
-      int threshold = GetConfidenceThreshold(final_trend);
-      
-      //--- Determine if pullback is ending (Confidence >= threshold)
-      bool pullback_ending = (total_confidence >= threshold);
-      status_pullback_ending = pullback_ending ? "YES" : "NO";
-      
-      //--- Update status
-      status_volume = GetVolumeDescription(volume_ratio);
-      status_pattern = GetPatternDescription(rates, final_trend);
-      
-      string pullback_desc = GetPullbackDescription(pb_pct);
-      string adx_level = GetADXLevelLabel(current_adx);
-      
-      double diff_fast = (current_price - current_ma_fast) / current_ma_fast * 100;
-      double diff_trend = (current_price - current_ma_trend) / current_ma_trend * 100;
-      string price_pos_desc = StringFormat("Price is %.2f%% %s M15 MA120 and %.2f%% %s H1 MA60",
-         MathAbs(diff_fast), (diff_fast > 0) ? "ABOVE" : "BELOW",
-         MathAbs(diff_trend), (diff_trend > 0) ? "ABOVE" : "BELOW");
-      
-      DrawPullbackMarker(current_price, final_trend, pullback_percent, total_confidence, threshold);
-      
-      //--- Volume filter
-      if(Enable_Volume_Filter && volume_ratio > 0.01)
-      {
-         if(volume_ratio < 0.8)
-         {
-            status_reason = "LOW VOLUME (" + DoubleToString(volume_ratio, 1) + "x)";
-            status_progress = "REJECTED: VOLUME";
-            LogMessage("❌ REJECTED: Volume too low (" + DoubleToString(volume_ratio, 1) + "x avg)", true);
-            ExecuteTrade(final_trend, entry_price, 0, tp_price, total_confidence, 
-                         pullback_score, mtf_score, adx_score,
-                         volume_score, pattern_score,
-                         pullback_desc, mtf_desc, 
-                         GetVolumeDescription(volume_ratio), 
-                         GetPatternDescription(rates, final_trend), 
-                         price_pos_desc, true, "Low Volume");
-            return;
-         }
-      }
-      
-      //--- STEP 7: ENHANCED TRADE DECISION
-      //--- BUY: Simple threshold (proven to work)
-      if(final_trend == TREND_UP)
-      {
-         if(total_confidence >= threshold)
-         {
-            status_reason = "BUY CONFIDENCE MET ✅ - ENTERING";
-            status_progress = "ENTERING BUY";
-            
-            LogMessage("✅ BUY - CONFIDENCE MET");
-            LogMessage("Total Confidence: " + IntegerToString(total_confidence) + "/100");
-            LogMessage("Threshold: " + IntegerToString(threshold) + "%");
-            LogMessage("MTF Score: " + IntegerToString(mtf_score) + "/40");
-            LogMessage("MTF Details: " + mtf_desc);
-            
-            sl_price = CalculateOptimalSL(final_trend, entry_price, tp_price, current_ma_fast, current_atr, Target_RR, rates);
-            
-            ExecuteTrade(final_trend, entry_price, sl_price, tp_price, total_confidence, 
-                         pullback_score, mtf_score, adx_score,
-                         volume_score, pattern_score,
-                         pullback_desc, mtf_desc, 
-                         GetVolumeDescription(volume_ratio), 
-                         GetPatternDescription(rates, final_trend), 
-                         price_pos_desc);
-         }
-         else
-         {
-            status_reason = "LOW BUY CONFIDENCE (" + IntegerToString(total_confidence) + "/" + IntegerToString(threshold) + ")";
-            status_progress = "WAITING: BUY CONFIDENCE";
-            
-            LogMessage("⏳ BUY - WAITING FOR CONFIDENCE");
-            LogMessage("Total Confidence: " + IntegerToString(total_confidence) + "/100");
-            LogMessage("Threshold: " + IntegerToString(threshold) + "%");
-         }
-      }
-      //--- SELL: Multi-factor optimization (2-4 factors required)
-      else if(final_trend == TREND_DOWN)
-      {
-         bool confidenceOptimal = IsSellConfidenceOptimal(total_confidence);
-         bool mtfOptimal = IsSellMTFOptimal(mtf_score);
-         bool adxOptimal = IsSellADXOptimal(current_adx);
-         bool volumeOptimal = IsSellVolumeOptimal(volume_ratio);
-         
-         //--- Calculate optimal factors count
-         int optimalCount = 0;
-         if(confidenceOptimal) optimalCount++;
-         if(mtfOptimal) optimalCount++;
-         if(adxOptimal) optimalCount++;
-         if(volumeOptimal) optimalCount++;
-         
-         //--- SELL Decision Logic: 2-4 factors required (Confidence must be optimal)
-         if(optimalCount >= 2 && confidenceOptimal)
-         {
-            // ✅ OPTIMAL SELL - Execute
-            status_reason = "OPTIMAL SELL ✅ - ENTERING";
-            status_progress = "ENTERING SELL";
-            
-            LogMessage("✅ SELL - OPTIMAL SETUP (" + IntegerToString(optimalCount) + "/4 factors)");
-            LogMessage("Confidence: " + IntegerToString(total_confidence) + "/100 (Optimal: " + (confidenceOptimal ? "YES" : "NO") + ")");
-            LogMessage("MTF Score: " + IntegerToString(mtf_score) + "/40 (Optimal: " + (mtfOptimal ? "YES" : "NO") + ")");
-            LogMessage("ADX: " + DoubleToString(current_adx, 1) + " (Optimal: " + (adxOptimal ? "YES" : "NO") + ")");
-            LogMessage("Volume Ratio: " + DoubleToString(volume_ratio, 2) + "x (Optimal: " + (volumeOptimal ? "YES" : "NO") + ")");
-            LogMessage("MTF Details: " + mtf_desc);
-            LogMessage("SELL Target: 95% of TP at " + DoubleToString(tp_price, _Digits));
-            
-            sl_price = CalculateOptimalSL(final_trend, entry_price, tp_price, current_ma_fast, current_atr, Target_RR, rates);
-            
-            ExecuteTrade(final_trend, entry_price, sl_price, tp_price, total_confidence, 
-                         pullback_score, mtf_score, adx_score,
-                         volume_score, pattern_score,
-                         pullback_desc, mtf_desc, 
-                         GetVolumeDescription(volume_ratio), 
-                         GetPatternDescription(rates, final_trend), 
-                         price_pos_desc);
-         }
-         else
-         {
-            // ❌ SELL CONDITIONS NOT MET - Need 2+ factors
-            status_reason = "SELL NEEDS 2+ FACTORS (" + IntegerToString(optimalCount) + "/4)";
-            status_progress = "WAITING: OPTIMAL SELL SETUP";
-            
-            LogMessage("❌ SELL - CONDITIONS NOT MET");
-            LogMessage("Optimal Factors: " + IntegerToString(optimalCount) + "/4 (Need 2+, Confidence must be optimal)");
-            LogMessage("Confidence: " + IntegerToString(total_confidence) + "/100 (Optimal: " + (confidenceOptimal ? "YES" : "NO") + ")");
-            LogMessage("MTF Score: " + IntegerToString(mtf_score) + "/40 (Optimal: " + (mtfOptimal ? "YES" : "NO") + ")");
-            LogMessage("ADX: " + DoubleToString(current_adx, 1) + " (Optimal: " + (adxOptimal ? "YES" : "NO") + ")");
-            LogMessage("Volume Ratio: " + DoubleToString(volume_ratio, 2) + "x (Optimal: " + (volumeOptimal ? "YES" : "NO") + ")");
-            LogMessage("MTF Details: " + mtf_desc);
-         }
-      }
-   }
-   else if(!is_pullback && !has_open_position)
-   {
-      double raw_percent = 0;
-      if(final_trend == TREND_UP)
-         raw_percent = (swing_high - current_price) / (swing_high - swing_low) * 100;
-      else if(final_trend == TREND_DOWN)
-         raw_percent = (current_price - swing_low) / (swing_high - swing_low) * 100;
-      
-      //--- Get min pullback for "too shallow" check
-      double pullback_min = GetPullbackMin(final_trend);
-      double pullback_min_pct = pullback_min * 100;
-      
-      if(raw_percent < pullback_min_pct)
-      {
-         status_reason = "PULLBACK TOO SHALLOW (" + DoubleToString(raw_percent, 1) + "%)";
-         status_progress = "WAITING: PULLBACK";
-      }
-      else if(raw_percent > 85.0)
-      {
-         status_reason = "PULLBACK TOO DEEP (" + DoubleToString(raw_percent, 1) + "%)";
-         status_progress = "WAITING: RETEST";
-      }
    }
 }
 
@@ -1956,8 +2366,9 @@ void DrawPullbackMarker(double current_price, ENUM_TREND_DIRECTION trend, double
    ObjectSetInteger(0, prefix + "Arrow", OBJPROP_WIDTH, 4);
    ObjectSetInteger(0, prefix + "Arrow", OBJPROP_ANCHOR, ANCHOR_CENTER);
    
-   string label_text = DoubleToString(pullback_percent * 100, 1) + "% | C: " + 
-                       IntegerToString(total_confidence) + "/100";
+   string boost_label = cached_boost_active ? " ⚡" : "";
+   string label_text = DoubleToString(pullback_percent, 1) + "% | C: " + 
+                       IntegerToString(total_confidence) + "/100" + boost_label;
    
    if(total_confidence >= threshold)
       label_text += " ✅";
@@ -1971,9 +2382,7 @@ void DrawPullbackMarker(double current_price, ENUM_TREND_DIRECTION trend, double
    ObjectSetInteger(0, prefix + "Label", OBJPROP_COLOR, signal_color);
    ObjectSetInteger(0, prefix + "Label", OBJPROP_FONTSIZE, 11);
    ObjectSetInteger(0, prefix + "Label", OBJPROP_ANCHOR, ANCHOR_LEFT);
-   ObjectSetInteger(0, prefix + "Label", OBJPROP_BACK, true);
-   ObjectSetInteger(0, prefix + "Label", OBJPROP_BGCOLOR, clrBlack);
-   ObjectSetInteger(0, prefix + "Label", OBJPROP_BORDER_COLOR, signal_color);
+   ObjectSetInteger(0, prefix + "Label", OBJPROP_BACK, false);
    ObjectSetString(0, prefix + "Label", OBJPROP_FONT, "Arial");
 }
 
@@ -1982,7 +2391,7 @@ void DrawPullbackMarker(double current_price, ENUM_TREND_DIRECTION trend, double
 //+------------------------------------------------------------------+
 
 //+------------------------------------------------------------------+
-//| Initialize Profit Tracker - FIXED with retry logic              |
+//| Initialize Profit Tracker - ENHANCED                            |
 //+------------------------------------------------------------------+
 void InitializeProfitTracker(ulong posTicket)
 {
@@ -2005,14 +2414,15 @@ void InitializeProfitTracker(ulong posTicket)
       trackerCount++;
    }
    
-   // Store position ticket
    profitTrackers[index].posTicket = posTicket;
    profitTrackers[index].highestPercentSeen = 0;
    profitTrackers[index].breakevenProcessed = false;
    profitTrackers[index].sl20PercentProcessed = false;
    profitTrackers[index].sl50PercentProcessed = false;
+   profitTrackers[index].partialClosesComplete = false;
+   profitTrackers[index].lastPartialPercent = 0;
+   profitTrackers[index].partialCount = 0;
    
-   // Try multiple times to get position data
    bool dataFound = false;
    for(int attempt = 0; attempt < 10; attempt++)
    {
@@ -2021,15 +2431,19 @@ void InitializeProfitTracker(ulong posTicket)
          profitTrackers[index].entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
          profitTrackers[index].tpPrice = PositionGetDouble(POSITION_TP);
          profitTrackers[index].posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+         profitTrackers[index].initialVolume = PositionGetDouble(POSITION_VOLUME);
+         profitTrackers[index].currentVolume = profitTrackers[index].initialVolume;
          dataFound = true;
          break;
       }
       Sleep(10);
    }
    
+   ArrayResize(profitTrackers[index].partialsProcessed, 0);
+   ArrayResize(profitTrackers[index].partialLevelsProcessed, 0);
+   
    if(!dataFound)
    {
-      // Remove the empty tracker slot
       if(index == trackerCount - 1)
          trackerCount--;
       else
@@ -2071,7 +2485,7 @@ void CleanupProfitTrackers()
 }
 
 //+------------------------------------------------------------------+
-//| Calculate Percent to Target Profit - FIXED for BOTH BUY/SELL   |
+//| Calculate Percent to Target Profit                               |
 //+------------------------------------------------------------------+
 double CalculatePercentToTP(ulong posTicket, double &targetProfit)
 {
@@ -2092,7 +2506,6 @@ double CalculatePercentToTP(ulong posTicket, double &targetProfit)
    if(tickSize <= 0 || tickValue <= 0)
       return 0;
    
-   // FIXED: Use ABSOLUTE value for distance (works for both BUY and SELL)
    double distance = MathAbs(tp - entry);
    targetProfit = (distance / tickSize) * tickValue * volume;
    
@@ -2104,7 +2517,7 @@ double CalculatePercentToTP(ulong posTicket, double &targetProfit)
 }
 
 //+------------------------------------------------------------------+
-//| Move Stop Loss to Breakeven (FIXED for BOTH BUY and SELL)       |
+//| Move Stop Loss to Breakeven                                      |
 //+------------------------------------------------------------------+
 bool MoveToBreakeven(ulong posTicket, double entryPrice, double tpPrice)
 {
@@ -2117,7 +2530,6 @@ bool MoveToBreakeven(ulong posTicket, double entryPrice, double tpPrice)
    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    double buffer = Breakeven_Buffer_Points * point;
    
-   // Check if SL is already at breakeven or better
    if(posType == POSITION_TYPE_BUY)
    {
       if(currentSL >= entryPrice + buffer)
@@ -2139,10 +2551,8 @@ bool MoveToBreakeven(ulong posTicket, double entryPrice, double tpPrice)
    
    newSL = NormalizeDouble(newSL, _Digits);
    
-   //--- Verify the new SL is valid
    if(posType == POSITION_TYPE_BUY)
    {
-      // BUY: New SL must be HIGHER than current SL (moving SL up)
       if(newSL <= currentSL)
          return false;
       double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
@@ -2151,7 +2561,6 @@ bool MoveToBreakeven(ulong posTicket, double entryPrice, double tpPrice)
    }
    else if(posType == POSITION_TYPE_SELL)
    {
-      // SELL: New SL must be LOWER than current SL (moving SL down)
       if(newSL >= currentSL)
          return false;
       double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
@@ -2166,7 +2575,7 @@ bool MoveToBreakeven(ulong posTicket, double entryPrice, double tpPrice)
    if(trade.PositionModify(posTicket, newSL, normalizedTP))
    {
       status_progress = "BREAKEVEN +" + DoubleToString(Breakeven_Buffer_Points, 0) + "pts @ " + DoubleToString(newSL, _Digits);
-      LogMessage("✅ [50%] Breakeven + buffer at " + DoubleToString(newSL, _Digits));
+      LogMessage("✅ [40%] Breakeven + buffer at " + DoubleToString(newSL, _Digits));
       return true;
    }
    else
@@ -2178,7 +2587,7 @@ bool MoveToBreakeven(ulong posTicket, double entryPrice, double tpPrice)
 }
 
 //+------------------------------------------------------------------+
-//| Move Stop Loss to Percentage of Target Profit (FIXED for BOTH)  |
+//| Move Stop Loss to Percentage of Target Profit                   |
 //+------------------------------------------------------------------+
 bool MoveSLToProfitPercent(ulong posTicket, double entryPrice, double tpPrice, double percentProfit)
 {
@@ -2197,23 +2606,17 @@ bool MoveSLToProfitPercent(ulong posTicket, double entryPrice, double tpPrice, d
    
    if(posType == POSITION_TYPE_BUY)
    {
-      // BUY: Move SL UP
       newSL = entryPrice + profitDistance;
-      // New SL must be HIGHER than current SL
       if(newSL <= currentSL + point)
          return false;
-      // New SL must be BELOW current price
       if(newSL >= currentPrice - point * 10)
          return false;
    }
    else if(posType == POSITION_TYPE_SELL)
    {
-      // SELL: Move SL DOWN
       newSL = entryPrice - profitDistance;
-      // New SL must be LOWER than current SL
       if(newSL >= currentSL - point)
          return false;
-      // New SL must be ABOVE current price
       if(newSL <= currentPrice + point * 10)
          return false;
    }
@@ -2227,7 +2630,7 @@ bool MoveSLToProfitPercent(ulong posTicket, double entryPrice, double tpPrice, d
    
    if(trade.PositionModify(posTicket, newSL, normalizedTP))
    {
-      string label = (percentProfit == 20.0) ? "[70%] 20% profit locked" : "[95%] 50% profit locked";
+      string label = (percentProfit == 20.0) ? "[60%] 20% profit locked" : "[80%] 50% profit locked";
       status_progress = "SL LOCKED " + DoubleToString(percentProfit, 0) + "% @ " + DoubleToString(newSL, _Digits);
       LogMessage("✅ " + label + " at " + DoubleToString(newSL, _Digits));
       return true;
@@ -2241,7 +2644,119 @@ bool MoveSLToProfitPercent(ulong posTicket, double entryPrice, double tpPrice, d
 }
 
 //+------------------------------------------------------------------+
-//| Manage Profits                                                   |
+//| Close Partial Position                                           |
+//+------------------------------------------------------------------+
+bool ClosePartialPosition(ulong posTicket, double closePercent)
+{
+   if(!PositionSelectByTicket(posTicket))
+      return false;
+   
+   double currentVolume = PositionGetDouble(POSITION_VOLUME);
+   double closeVolume = currentVolume * (closePercent / 100.0);
+   
+   double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   closeVolume = MathFloor(closeVolume / lotStep) * lotStep;
+   closeVolume = MathMax(minLot, closeVolume);
+   
+   double remainingVolume = currentVolume - closeVolume;
+   if(remainingVolume < Min_Volume_For_Partial)
+      return false;
+   
+   if(closeVolume <= 0 || closeVolume > currentVolume)
+      return false;
+   
+   CTrade trade;
+   trade.SetExpertMagicNumber(12345);
+   trade.SetDeviationInPoints(Slippage);
+   
+   if(trade.PositionClosePartial(posTicket, closeVolume))
+   {
+      LogMessage("📊 PARTIAL CLOSE: " + DoubleToString(closePercent, 0) + 
+                 "% of position (" + DoubleToString(closeVolume, 2) + " lots) at " + 
+                 DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_BID), _Digits));
+      return true;
+   }
+   else
+   {
+      int error = GetLastError();
+      LogMessage("Failed to close partial. Error: " + IntegerToString(error), true);
+      return false;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Process Partial Closes - Every 10%                              |
+//+------------------------------------------------------------------+
+bool ProcessPartialCloses(ulong posTicket, double currentPercentToTP)
+{
+   if(!Enable_Partial_Closes) return false;
+   if(!PositionSelectByTicket(posTicket)) return false;
+   
+   int trackerIdx = GetProfitTrackerIndex(posTicket);
+   if(trackerIdx < 0) return false;
+   
+   if(profitTrackers[trackerIdx].partialClosesComplete) return false;
+   if(profitTrackers[trackerIdx].currentVolume <= Min_Volume_For_Partial * 1.5) return false;
+   
+   int currentInterval = (int)(currentPercentToTP / Partial_Close_Interval);
+   if(currentInterval < 1) return false;
+   
+   bool alreadyProcessed = false;
+   for(int i = 0; i < profitTrackers[trackerIdx].partialCount; i++)
+   {
+      if(profitTrackers[trackerIdx].partialLevelsProcessed[i] == currentInterval)
+      {
+         alreadyProcessed = true;
+         break;
+      }
+   }
+   
+   if(alreadyProcessed) return false;
+   
+   double remainingVolume = profitTrackers[trackerIdx].currentVolume;
+   double closePercent = 10.0;
+   
+   double closeVolume = remainingVolume * (closePercent / 100.0);
+   double afterCloseVolume = remainingVolume - closeVolume;
+   
+   if(afterCloseVolume <= Min_Volume_For_Partial * 1.1)
+   {
+      closeVolume = remainingVolume - Min_Volume_For_Partial;
+      if(closeVolume <= 0) return false;
+      
+      if(ClosePartialPosition(posTicket, (closeVolume / remainingVolume) * 100.0))
+      {
+         profitTrackers[trackerIdx].currentVolume = Min_Volume_For_Partial;
+         profitTrackers[trackerIdx].partialClosesComplete = true;
+         profitTrackers[trackerIdx].partialCount++;
+         ArrayResize(profitTrackers[trackerIdx].partialLevelsProcessed, profitTrackers[trackerIdx].partialCount);
+         profitTrackers[trackerIdx].partialLevelsProcessed[profitTrackers[trackerIdx].partialCount - 1] = currentInterval;
+         
+         LogMessage("📊 FINAL PARTIAL: Remaining " + DoubleToString(Min_Volume_For_Partial, 2) + 
+                    " lots protected at " + DoubleToString(currentPercentToTP, 1) + "% of TP");
+         return true;
+      }
+      return false;
+   }
+   
+   if(ClosePartialPosition(posTicket, closePercent))
+   {
+      profitTrackers[trackerIdx].currentVolume = afterCloseVolume;
+      profitTrackers[trackerIdx].partialCount++;
+      ArrayResize(profitTrackers[trackerIdx].partialLevelsProcessed, profitTrackers[trackerIdx].partialCount);
+      profitTrackers[trackerIdx].partialLevelsProcessed[profitTrackers[trackerIdx].partialCount - 1] = currentInterval;
+      
+      LogMessage("📊 PARTIAL CLOSE: " + DoubleToString(closePercent, 0) + 
+                 "% closed at " + DoubleToString(currentPercentToTP, 1) + "% of TP");
+      return true;
+   }
+   
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| Manage Profits - UPDATED                                       |
 //+------------------------------------------------------------------+
 void ManageProfits()
 {
@@ -2269,8 +2784,12 @@ void ManageProfits()
    double tpPrice = PositionGetDouble(POSITION_TP);
    double slPrice = PositionGetDouble(POSITION_SL);
    ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+   double currentVolume = PositionGetDouble(POSITION_VOLUME);
+   
+   profitTrackers[trackerIdx].currentVolume = currentVolume;
    
    status_profit = "$" + DoubleToString(profit, 2);
+   status_lot = DoubleToString(currentVolume, 2);
    
    if(tpPrice <= 0 || profit <= 0)
       return;
@@ -2286,7 +2805,17 @@ void ManageProfits()
    
    double currentPercent = percentToTP;
    
-   //--- 1. BREAKEVEN at 50%
+   //--- 1. PARTIAL CLOSES (Every 10%)
+   if(Enable_Partial_Closes && currentVolume > Min_Volume_For_Partial)
+   {
+      if(ProcessPartialCloses(positionTicket, currentPercent))
+      {
+         status_progress = "PARTIAL @" + DoubleToString(currentPercent, 0) + "%";
+         return;
+      }
+   }
+   
+   //--- 2. BREAKEVEN at 40%
    if(!profitTrackers[trackerIdx].breakevenProcessed && currentPercent >= Breakeven_Threshold)
    {
       bool slBelowEntry = (posType == POSITION_TYPE_BUY && slPrice < entryPrice);
@@ -2297,12 +2826,12 @@ void ManageProfits()
          if(MoveToBreakeven(positionTicket, entryPrice, tpPrice))
          {
             profitTrackers[trackerIdx].breakevenProcessed = true;
-            LogMessage("📊 [50%] Breakeven + buffer locked at " + DoubleToString(currentPercent, 1) + "% of TP");
+            LogMessage("📊 [40%] Breakeven + buffer locked at " + DoubleToString(currentPercent, 1) + "% of TP");
          }
       }
    }
    
-   //--- 2. SL TO 20% PROFIT at 70%
+   //--- 3. SL TO 20% PROFIT at 60%
    if(profitTrackers[trackerIdx].breakevenProcessed && 
       !profitTrackers[trackerIdx].sl20PercentProcessed && 
       currentPercent >= SL_20Percent_Threshold)
@@ -2310,11 +2839,11 @@ void ManageProfits()
       if(MoveSLToProfitPercent(positionTicket, entryPrice, tpPrice, 20.0))
       {
          profitTrackers[trackerIdx].sl20PercentProcessed = true;
-         LogMessage("📊 [70%] 20% profit locked at " + DoubleToString(currentPercent, 1) + "% of TP");
+         LogMessage("📊 [60%] 20% profit locked at " + DoubleToString(currentPercent, 1) + "% of TP");
       }
    }
    
-   //--- 3. SL TO 50% PROFIT at 95%
+   //--- 4. SL TO 50% PROFIT at 80%
    if(profitTrackers[trackerIdx].sl20PercentProcessed && 
       !profitTrackers[trackerIdx].sl50PercentProcessed && 
       currentPercent >= SL_50Percent_Threshold)
@@ -2322,7 +2851,7 @@ void ManageProfits()
       if(MoveSLToProfitPercent(positionTicket, entryPrice, tpPrice, 50.0))
       {
          profitTrackers[trackerIdx].sl50PercentProcessed = true;
-         LogMessage("📊 [95%] 50% profit locked at " + DoubleToString(currentPercent, 1) + "% of TP");
+         LogMessage("📊 [80%] 50% profit locked at " + DoubleToString(currentPercent, 1) + "% of TP");
       }
    }
 }
