@@ -12,7 +12,7 @@
 //|                    + TREND MANAGER VERIFICATION                 |
 //|                    + BRACKET-BASED LOT SIZING                   |
 //|                    + v3.42: CORRECTED MACD ENTRY CHECK          |
-//|                    REJECT entry if MACD OPPOSES trend ≥20%      |
+//|                    REJECT entry if MACD OPPOSES trend ≥10%      |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
 #property version "3.42"
@@ -67,7 +67,7 @@ bool g_debugPullback = false;
 // INPUT PARAMETERS - LOSS MANAGEMENT
 // ============================================================
 input bool InpEnableLossManagement = true;        // Enable Loss Management
-input double InpLossCloseConfidence = 20.0;        // MACD Confidence % to close
+input double InpLossCloseConfidence = 10.0;        // MACD Confidence % to close
 input bool InpCloseOnMACDDivergence = true;        // Close on MACD divergence
 
 // ============================================================
@@ -127,7 +127,7 @@ int OnInit()
    LOG_INFO("   TP never moves backward", g_debugMain);
    LOG_INFO("   Loss Management: " + (InpEnableLossManagement ? "ENABLED" : "DISABLED"), g_debugMain);
    LOG_INFO("   MACD Close Confidence: " + DoubleToString(InpLossCloseConfidence, 0) + "%", g_debugMain);
-   LOG_INFO("   MACD Entry: REJECT if MACD OPPOSES trend with 20% confidence", g_debugMain);
+   LOG_INFO("   MACD Entry: REJECT if MACD OPPOSES trend with10% confidence", g_debugMain);
    LOG_INFO("   DEBUG: " + (g_debugMode ? "ON" : "OFF (minimal)"), g_debugMain);
    
    g_magicNumber = InpMagicNumber;
@@ -563,7 +563,9 @@ double GetThresholdForDirection(string direction)
 }
 
 //+------------------------------------------------------------------+
-//| CalculateTakeProfits - STANDARD RANGE-BASED SL                  |
+//| CalculateTakeProfits - ENFORCE MINIMUM RR 1.5:1                 |
+//| SL = rangeLow (BUY) or rangeHigh (SELL) - Risk is fixed        |
+//| TP must be at least 1.5x the Risk                              |
 //+------------------------------------------------------------------+
 bool CalculateTakeProfits(int signal, double currentPrice, double rangeHigh, double rangeLow, 
                           double pullbackPercent, double riskAmount, 
@@ -573,6 +575,9 @@ bool CalculateTakeProfits(int signal, double currentPrice, double rangeHigh, dou
    double pointValue = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    double rangeSize = rangeHigh - rangeLow;
    
+   // ──────────────────────────────────────────────────────────────
+   // VALIDATION
+   // ──────────────────────────────────────────────────────────────
    if(rangeHigh == 0 || rangeLow == 0 || rangeHigh <= rangeLow)
    {
       LOG_ERROR("❌ Invalid range data");
@@ -585,49 +590,66 @@ bool CalculateTakeProfits(int signal, double currentPrice, double rangeHigh, dou
       return false;
    }
    
-   double tp1Distance = 0;
-   if(signal == 1)
-      tp1Distance = rangeHigh - currentPrice;
+   // ──────────────────────────────────────────────────────────────
+   // RISK IS FIXED = riskAmount (distance from entry to SL)
+   // ──────────────────────────────────────────────────────────────
+   double risk = riskAmount;  // This is always 1 unit of risk
+   
+   // ──────────────────────────────────────────────────────────────
+   // CALCULATE REWARD (distance from entry to range extreme)
+   // ──────────────────────────────────────────────────────────────
+   double reward = 0;
+   
+   if(signal == 1)  // BUY - TP at rangeHigh
+   {
+      reward = rangeHigh - currentPrice;
+   }
+   else  // SELL - TP at rangeLow
+   {
+      reward = currentPrice - rangeLow;
+   }
+   
+   if(reward < 0) reward = 0;
+   
+   // ──────────────────────────────────────────────────────────────
+   // CALCULATE RISK-REWARD RATIO
+   // RR = Reward / Risk
+   // ──────────────────────────────────────────────────────────────
+   rr = (risk > 0) ? reward / risk : 0;
+   
+   double requiredRR = InpMinRR;  // 1.5
+   
+   // ──────────────────────────────────────────────────────────────
+   // CHECK IF RR MEETS MINIMUM 1.5:1
+   // ──────────────────────────────────────────────────────────────
+   if(rr >= requiredRR)
+   {
+      // ✅ PASS - Use range-based TP
+      if(signal == 1)
+         primaryTP = rangeHigh;
+      else
+         primaryTP = rangeLow;
+      
+      LOG_DEBUG("✅ RR: " + DoubleToString(rr, 2) + ":1 >= Minimum " + 
+                DoubleToString(requiredRR, 1) + ":1 - Trade accepted", g_debugMain);
+      return true;
+   }
    else
-      tp1Distance = currentPrice - rangeLow;
-   
-   if(tp1Distance < 0) tp1Distance = 0;
-   
-   double rr1 = (riskAmount > 0) ? tp1Distance / riskAmount : 0;
-   
-   if(rr1 >= 1.0)
    {
-      if(signal == 1)
-         primaryTP = currentPrice + tp1Distance;
-      else
-         primaryTP = currentPrice - tp1Distance;
-      
-      rr = rr1;
-      return true;
+      // ❌ FAIL - RR too low
+      LOG_DEBUG("❌❌❌ TRADE REJECTED: RR too low", g_debugMain);
+      LOG_DEBUG("   Risk: " + DoubleToString(risk / pointValue, 1) + " pips", g_debugMain);
+      LOG_DEBUG("   Reward: " + DoubleToString(reward / pointValue, 1) + " pips", g_debugMain);
+      LOG_DEBUG("   RR: " + DoubleToString(rr, 2) + ":1", g_debugMain);
+      LOG_DEBUG("   Required: " + DoubleToString(requiredRR, 1) + ":1 (Minimum)", g_debugMain);
+      return false;
    }
-   
-   double tp2Distance = tp1Distance * 1.5;
-   double rr2 = (riskAmount > 0) ? tp2Distance / riskAmount : 0;
-   
-   if(rr2 >= 1.0)
-   {
-      if(signal == 1)
-         primaryTP = currentPrice + tp2Distance;
-      else
-         primaryTP = currentPrice - tp2Distance;
-      
-      rr = rr2;
-      return true;
-   }
-   
-   LOG_DEBUG("❌ Trade rejected: RR too low (RR1: " + DoubleToString(rr1, 2) + 
-             ", RR2: " + DoubleToString(rr2, 2) + ")", g_debugMain);
-   return false;
 }
 
 //+------------------------------------------------------------------+
 //| CheckSignal - CORRECTED MACD ENTRY CHECK                        |
-//| REJECT entry if MACD OPPOSES the trend with 20% confidence     |
+//| REJECT entry if MACD OPPOSES the trend with    0% confidence     |
+//| REJECT entry if Risk-Reward < 1.5:1                            |
 //+------------------------------------------------------------------+
 void CheckSignal()
 {
@@ -712,7 +734,7 @@ void CheckSignal()
 
    // ============================================================
    // ═══ CORRECTED MACD ENTRY CHECK ═══
-   // REJECT entry if MACD OPPOSES the trend with ≥20% confidence
+   // REJECT entry if MACD OPPOSES the trend with ≥10% confidence
    // ============================================================
    if(trendDir != "NEUTRAL")
    {
@@ -721,29 +743,29 @@ void CheckSignal()
       
       if(trendDir == "BULLISH")
       {
-         // For LONG: REJECT if MACD is BEARISH with confidence ≥ 20%
-         if(macdDirection == "BEARISH" && macdConfidence >= 20.0)
+         // For LONG: REJECT if MACD is BEARISH with confidence ≥ 10%
+         if(macdDirection == "BEARISH" && macdConfidence >= 10.0)
          {
             macdOpposesTrend = true;
             macdOppositionConfidence = macdConfidence;
             
             LOG_DEBUG("❌ LONG REJECTED: MACD OPPOSES BULLISH trend", g_debugMain);
             LOG_DEBUG("   MACD Direction: " + macdDirection + " | Confidence: " + 
-                      DoubleToString(macdConfidence, 1) + "% (≥20% threshold)", g_debugMain);
+                      DoubleToString(macdConfidence, 1) + "% (≥10% threshold)", g_debugMain);
             return;  // ← REJECT ENTRY
          }
       }
       else if(trendDir == "BEARISH")
       {
-         // For SHORT: REJECT if MACD is BULLISH with confidence ≥ 20%
-         if(macdDirection == "BULLISH" && macdConfidence >= 20.0)
+         // For SHORT: REJECT if MACD is BULLISH with confidence ≥ 10%
+         if(macdDirection == "BULLISH" && macdConfidence >= 10.0)
          {
             macdOpposesTrend = true;
             macdOppositionConfidence = macdConfidence;
             
             LOG_DEBUG("❌ SHORT REJECTED: MACD OPPOSES BEARISH trend", g_debugMain);
             LOG_DEBUG("   MACD Direction: " + macdDirection + " | Confidence: " + 
-                      DoubleToString(macdConfidence, 1) + "% (≥20% threshold)", g_debugMain);
+                      DoubleToString(macdConfidence, 1) + "% (≥10% threshold)", g_debugMain);
             return;  // ← REJECT ENTRY
          }
       }
@@ -810,7 +832,9 @@ void CheckSignal()
    
    trade.entryPrice = currentPrice;
    
-   // Set SL - Standard range-based (100%)
+   // ============================================================
+   // STEP 1: SET STOP LOSS
+   // ============================================================
    if(trade.signal == 1)
       trade.stopLoss = rangeLow;
    else
@@ -822,6 +846,9 @@ void CheckSignal()
    if(riskAmount <= 0)
       return;
    
+   // ============================================================
+   // STEP 2: CALCULATE TAKE PROFIT WITH MINIMUM RR 1:1.5
+   // ============================================================
    double primaryTP = 0, rr = 0;
    
    bool rrPassed = CalculateTakeProfits(trade.signal, currentPrice, rangeHigh, rangeLow, 
@@ -829,10 +856,18 @@ void CheckSignal()
                                          portfolioBoost);
    
    if(!rrPassed)
+   {
+      LOG_DEBUG("❌ Trade REJECTED: Insufficient Risk-Reward (RR: " + 
+                DoubleToString(rr, 2) + ":1 < Minimum " + DoubleToString(InpMinRR, 1) + ":1)", 
+                g_debugMain);
       return;
+   }
    
    if(primaryTP <= 0)
+   {
+      LOG_DEBUG("❌ Trade REJECTED: Invalid Take Profit level", g_debugMain);
       return;
+   }
    
    trade.takeProfit = primaryTP;
    trade.takeProfit2 = 0;
@@ -843,12 +878,24 @@ void CheckSignal()
    trade.riskRewardRatio = rewardAmount / riskAmount;
    trade.riskRewardRatio2 = 0;
    
-   LOG_TRADE("✅ TRADE: " + (trade.signal == 1 ? "LONG" : "SHORT") + 
-             " | RR: " + DoubleToString(trade.riskRewardRatio, 2) + ":1" +
-             " | Boost: " + StringFormat("%+.1f%%", portfolioBoost));
-   LOG_DEBUG("   Entry: " + DoubleToString(trade.entryPrice, _Digits) + 
-             " | SL: " + DoubleToString(trade.stopLoss, _Digits) + 
-             " | TP: " + DoubleToString(trade.takeProfit, _Digits), g_debugMain);
+   // ============================================================
+   // STEP 3: LOG TRADE DETAILS
+   // ============================================================
+   LOG_TRADE("═══════════════════════════════════════════════════════════");
+   LOG_TRADE("✅✅✅ TRADE SIGNAL ACCEPTED ✅✅✅");
+   LOG_TRADE("   Direction: " + (trade.signal == 1 ? "LONG (BUY)" : "SHORT (SELL)"));
+   LOG_TRADE("   Entry: " + DoubleToString(trade.entryPrice, _Digits));
+   LOG_TRADE("   Stop Loss: " + DoubleToString(trade.stopLoss, _Digits) + 
+             " (" + DoubleToString(riskPips, 1) + " pips risk)");
+   LOG_TRADE("   Take Profit: " + DoubleToString(trade.takeProfit, _Digits) + 
+             " (" + DoubleToString(rewardPips, 1) + " pips reward)");
+   LOG_TRADE("   Risk-Reward: " + DoubleToString(trade.riskRewardRatio, 2) + ":1" +
+             " (Minimum: " + DoubleToString(InpMinRR, 1) + ":1)");
+   LOG_TRADE("   Pullback Zone: " + zoneCategory + " (" + 
+             DoubleToString(pullbackPercent, 1) + "%)");
+   LOG_TRADE("   Boost: " + StringFormat("%+.1f%%", portfolioBoost));
+   LOG_TRADE("   Confidence: " + DoubleToString(finalConfidence, 1) + "%");
+   LOG_TRADE("═══════════════════════════════════════════════════════════");
    
    if(trade.signal == 1)
       trade.partialLevel75 = currentPrice + (trade.takeProfit - currentPrice) * 0.75;
@@ -859,6 +906,9 @@ void CheckSignal()
    trade.pullbackScore = (int)pbResult.pullbackScore;
    trade.entryReason = zoneCategory + " pullback - Boost " + StringFormat("%+.1f%%", portfolioBoost);
    
+   // ============================================================
+   // STEP 4: CALCULATE LOT SIZE
+   // ============================================================
    double lotSize = InpLotSize;
    
    if(g_riskManager != NULL)
@@ -874,17 +924,26 @@ void CheckSignal()
    if(stepLot > 0)
       lotSize = MathRound(lotSize / stepLot) * stepLot;
    
+   LOG_DEBUG("   Lot Size: " + DoubleToString(lotSize, 2), g_debugMain);
+   
+   // ============================================================
+   // STEP 5: EXECUTE TRADE
+   // ============================================================
    if(InpEnableTrading && g_positionManager != NULL)
    {
       bool executed = g_positionManager.ExecuteTrade(trade, lotSize);
       if(executed)
       {
-         LOG_TRADE("✅✅✅ TRADE EXECUTED ✅✅✅");
+         LOG_TRADE("✅✅✅ TRADE EXECUTED SUCCESSFULLY ✅✅✅");
       }
       else
       {
-         LOG_ERROR("❌ TRADE EXECUTION FAILED");
+         LOG_ERROR("❌❌❌ TRADE EXECUTION FAILED ❌❌❌");
       }
+   }
+   else
+   {
+      LOG_DEBUG("⚠️ Trading disabled - Signal detected but not executed", g_debugMain);
    }
 }
 

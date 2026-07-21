@@ -8,12 +8,6 @@
 #property version "1.05"
 
 #include "../Data/PullbackModule.mqh"
-#include "../Utils/Logger.mqh"
-
-// ============================================================
-// CHART MODULE INDEPENDENT TOGGLE
-// ============================================================
-bool g_chartDebugMode = false;  // Set to true to enable chart logging
 
 //+------------------------------------------------------------------+
 //| Chart Module Class - ONLY Chart Module, NO PullbackModule      |
@@ -65,8 +59,6 @@ public:
 //+------------------------------------------------------------------+
 CChartModule::CChartModule(string symbol, ENUM_TIMEFRAMES tf, int rangeBars)
 {
-   LOG_DEBUG("Initializing for " + (symbol == NULL ? _Symbol : symbol), g_chartDebugMode);
-   
    m_symbol = (symbol == NULL) ? _Symbol : symbol;
    m_timeframe = tf;
    m_rangeBars = rangeBars;
@@ -81,8 +73,6 @@ CChartModule::CChartModule(string symbol, ENUM_TIMEFRAMES tf, int rangeBars)
    m_pullbackLineName = m_prefix + "PullbackLine";
    m_perfectZoneName = m_prefix + "PerfectZone";
    m_labelName = m_prefix + "Label";
-   
-   LOG_DEBUG("Created with prefix " + m_prefix, g_chartDebugMode);
 }
 
 //+------------------------------------------------------------------+
@@ -90,7 +80,6 @@ CChartModule::CChartModule(string symbol, ENUM_TIMEFRAMES tf, int rangeBars)
 //+------------------------------------------------------------------+
 CChartModule::~CChartModule()
 {
-   LOG_WARNING("Destructor - Clearing drawings");
    ClearDrawings();
 }
 
@@ -99,9 +88,7 @@ CChartModule::~CChartModule()
 //+------------------------------------------------------------------+
 void CChartModule::ClearDrawings()
 {
-   LOG_DEBUG("Clearing all drawings with prefix " + m_prefix, g_chartDebugMode);
-   int deleted = ObjectsDeleteAll(0, m_prefix);
-   LOG_DEBUG("Deleted " + IntegerToString(deleted) + " objects", g_chartDebugMode);
+   ObjectsDeleteAll(0, m_prefix);
 }
 
 //+------------------------------------------------------------------+
@@ -185,12 +172,8 @@ string CChartModule::GetTooltip(SPullbackDrawingData &data)
 void CChartModule::CreateHorizontalLine(string name, double price, datetime time1, datetime time2,
                                        color lineColor, ENUM_LINE_STYLE style, int width)
 {
-   LOG_DEBUG("Creating horizontal line " + name + " at price " + DoubleToString(price, _Digits), g_chartDebugMode);
-   
    if(!ObjectCreate(0, name, OBJ_TREND, 0, time1, price, time2, price))
    {
-      LOG_ERROR("Failed to create line " + name);
-      
       ObjectSetDouble(0, name, OBJPROP_PRICE, 0, price);
       ObjectSetDouble(0, name, OBJPROP_PRICE, 1, price);
    }
@@ -209,12 +192,8 @@ void CChartModule::CreateHorizontalLine(string name, double price, datetime time
 void CChartModule::CreateRectangle(string name, datetime time1, double price1, datetime time2, double price2,
                                   color lineColor, bool fill, ENUM_LINE_STYLE style)
 {
-   LOG_DEBUG("Creating rectangle " + name, g_chartDebugMode);
-   
    if(!ObjectCreate(0, name, OBJ_RECTANGLE, 0, time1, price1, time2, price2))
    {
-      LOG_ERROR("Failed to create rectangle " + name);
-      
       ObjectSetInteger(0, name, OBJPROP_TIME, 0, time1);
       ObjectSetDouble(0, name, OBJPROP_PRICE, 0, price1);
       ObjectSetInteger(0, name, OBJPROP_TIME, 1, time2);
@@ -237,8 +216,6 @@ void CChartModule::CreateRectangle(string name, datetime time1, double price1, d
 //+------------------------------------------------------------------+
 void CChartModule::CreateLabel(string name, string text, int x, int y, color textColor, int fontSize)
 {
-   LOG_DEBUG("Creating label " + name + " with text: " + text, g_chartDebugMode);
-   
    if(!ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0))
    {
       // If object already exists, just modify it
@@ -259,25 +236,16 @@ void CChartModule::CreateLabel(string name, string text, int x, int y, color tex
 //+------------------------------------------------------------------+
 void CChartModule::Update()
 {
-   LOG_DEBUG("Update called", g_chartDebugMode);
-   
    if(m_pullbackModule == NULL) 
-   {
-      LOG_WARNING("No pullback module set");
       return;
-   }
    
    SPullbackDrawingData data = m_pullbackModule.GetDrawingData();
-   LOG_DEBUG("Got drawing data, isValid = " + (data.isValid ? "true" : "false"), g_chartDebugMode);
    
    if(!data.isValid)
    {
-      LOG_WARNING("Invalid data, clearing drawings");
       ClearDrawings();
       return;
    }
-   
-   LOG_INFO("Zone: " + data.zoneCategory + ", Pullback: " + DoubleToString(data.adjustedPercent, 1) + "%", g_chartDebugMode);
    
    color zoneColor = GetZoneColor(data.zoneCategory);
    string zoneEmoji = GetZoneEmoji(data.zoneCategory);
@@ -310,8 +278,5 @@ void CChartModule::Update()
    if(ObjectFind(0, m_pullbackLineName) >= 0)
    {
       ObjectSetString(0, m_pullbackLineName, OBJPROP_TOOLTIP, tooltip);
-      LOG_DEBUG("Set tooltip for " + m_pullbackLineName, g_chartDebugMode);
    }
-   
-   LOG_DEBUG("Update complete", g_chartDebugMode);
 }

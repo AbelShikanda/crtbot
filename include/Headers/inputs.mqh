@@ -18,7 +18,7 @@ input int      InpMagicNumber       = 123456;
 // ============================================================
 input bool     InpShowChart         = true;
 input bool     InpShowDashboard     = true;
-input int      InpRangeBars         = 30;
+input int      InpRangeBars         = 60;
 input ENUM_TIMEFRAMES InpEntryTF    = PERIOD_M5;
 
 // ============================================================
@@ -52,13 +52,14 @@ input int      InpMaxSlippage       = 10;
 //+------------------------------------------------------------------+
 input bool   InpUseBreakeven = true;        // Use Breakeven Stop
 input int    InpBreakevenPips = 500;         // Breakeven after X pips
+input int    InpBreakevenBuffer = 100;        // Breakeven buffer in pips  ← ADD THIS
 
 //+------------------------------------------------------------------+
 //| TRAILING STOP SETTINGS                                          |
 //+------------------------------------------------------------------+
 input bool   InpUseTrailingStop = true;     // ✅ ENABLED
-input int    InpTrailingStartPips = 700;     // Start trailing after 30 pips
-input int    InpTrailingStopPips = 700;      // Trail SL 30 pips behind
+input int    InpTrailingStartPips = 1000;     // Start trailing after 30 pips
+input int    InpTrailingStopPips = 1000;      // Trail SL 30 pips behind
 
 // ============================================================
 // PARTIAL CLOSE SETTINGS

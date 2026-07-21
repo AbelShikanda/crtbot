@@ -1,11 +1,12 @@
 //+------------------------------------------------------------------+
 //|                      PullbackModule.mqh                         |
 //|                    Pullback Calculation Module                   |
-//|                    v3.1 - CLEAN ZONE SCORING ONLY              |
+//|                    v3.2 - NO GO ZONES ADDED                     |
+//|                    0-20% and 90-100% = Score 0                 |
 //|                    FIXED SCORES - NO CALCULATIONS              |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
-#property version "3.1"
+#property version "3.2"
 
 #include "../Headers/Enums.mqh"
 #include "../Headers/Structures.mqh"
@@ -61,7 +62,7 @@ private:
       string shortName;
    };
    
-   ZoneDefinition m_zones[9];  // 9 zones
+   ZoneDefinition m_zones[10];  // 10 zones (increased from 9)
    int m_zoneCount;
    
    // ================================================================
@@ -73,7 +74,7 @@ private:
    bool     IsTrendValid();
    string   TrendToString(int trend);
    
-   // Zone initialization - FIXED SCORES
+   // Zone initialization - FIXED SCORES WITH NO GO ZONES
    void     AddZone(double low, double high, int score, string name, string shortName);
    void     InitializeZones();
    
@@ -127,6 +128,9 @@ public:
    double GetBaseConfidence();
    double GetFinalConfidence();
    int GetTrendPublic();
+   
+   // ═══ NEW: NO GO ZONE CHECK ═══
+   bool IsNoGoZone(double pullbackPercent);
 };
 
 //+------------------------------------------------------------------+
@@ -134,7 +138,7 @@ public:
 //+------------------------------------------------------------------+
 CPullbackModule::CPullbackModule(string symbol, ENUM_TIMEFRAMES tf, int rangeBars)
 {
-   LOG_DEBUG("🔧 CPullbackModule v3.1 (Clean Zone) initializing for " + (symbol == NULL ? _Symbol : symbol), 
+   LOG_DEBUG("🔧 CPullbackModule v3.2 (No Go Zones) initializing for " + (symbol == NULL ? _Symbol : symbol), 
              g_pullbackDebugMode);
    
    m_symbol = (symbol == NULL) ? _Symbol : symbol;
@@ -161,7 +165,7 @@ CPullbackModule::CPullbackModule(string symbol, ENUM_TIMEFRAMES tf, int rangeBar
    // Initialize zones
    InitializeZones();
    
-   LOG_DEBUG("🔧 CPullbackModule v3.1 (Clean Zone) initialized for " + m_symbol + 
+   LOG_DEBUG("🔧 CPullbackModule v3.2 (No Go Zones) initialized for " + m_symbol + 
              " | Range Bars: " + IntegerToString(m_rangeBars), 
              g_pullbackDebugMode);
 }
@@ -175,46 +179,59 @@ CPullbackModule::~CPullbackModule()
 }
 
 //+------------------------------------------------------------------+
-//| INITIALIZE ZONES - FIXED SCORES (NO CALCULATIONS)              |
-//| Each zone has a pre-defined score. No math involved.           |
+//| INITIALIZE ZONES - FIXED SCORES WITH NO GO ZONES               |
+//| 90-100% = NO GO ZONE (Score 0)                                 |
+//| 0-20% = NO GO ZONE (Score 0)                                   |
 //+------------------------------------------------------------------+
 void CPullbackModule::InitializeZones()
 {
    m_zoneCount = 0;
    
    // ──────────────────────────────────────────────────────────────
-   // ZONE DEFINITIONS - FIXED SCORES ONLY
-   // No calculations, just direct lookup by pullback percentage
+   // ═══ NO GO ZONES (Score 0) - DO NOT TRADE ═══
    // ──────────────────────────────────────────────────────────────
    
-   // Zone 1: PERFECT PEAK (76-80%) → Score 100
-   AddZone(76.0, 80.0, 100, "PERFECT PEAK ★★★", "PEAK");
+   // Zone 1: NO GO - TOO EARLY (0-20%) → Score 0
+   AddZone(0.0, 20.0, 0, "⚠️ NO GO - TOO EARLY", "EARLY");
    
-   // Zone 2: EXCELLENT (72-84%) → Score 92
-   AddZone(72.0, 84.0, 92, "EXCELLENT ★★", "EXCL");
+   // ──────────────────────────────────────────────────────────────
+   // ═══ TRADABLE ZONES (Scores 25-100) ═══
+   // ──────────────────────────────────────────────────────────────
    
-   // Zone 3: SWEET (65-90%) → Score 80
-   AddZone(65.0, 90.0, 80, "SWEET ★", "SWEET");
+   // Zone 2: PERFECT PEAK (76-80%) → Score 100
+   AddZone(76.0, 80.0, 100, "✅ PERFECT PEAK ★★★", "PEAK");
    
-   // Zone 4: NEAR SWEET (60-95%) → Score 72
-   AddZone(60.0, 95.0, 72, "NEAR SWEET", "N-SWT");
+   // Zone 3: EXCELLENT (72-84%) → Score 92
+   AddZone(72.0, 84.0, 92, "✅ EXCELLENT ★★", "EXCL");
    
-   // Zone 5: EDGE (55-95%) → Score 65
-   AddZone(55.0, 95.0, 65, "EDGE", "EDGE");
+   // Zone 4: SWEET (65-90%) → Score 80
+   AddZone(65.0, 90.0, 80, "✅ SWEET ★", "SWEET");
    
-   // Zone 6: TRANSITION (40-98%) → Score 45
-   AddZone(40.0, 98.0, 45, "TRANSITION", "TRANS");
+   // Zone 5: NEAR SWEET (60-95%) → Score 72
+   AddZone(60.0, 95.0, 72, "✅ NEAR SWEET", "N-SWT");
    
-   // Zone 7: TRANSITION EDGE (25-100%) → Score 35
-   AddZone(25.0, 100.0, 35, "TRANSITION EDGE", "T-EDGE");
+   // Zone 6: EDGE (55-95%) → Score 65
+   AddZone(55.0, 95.0, 65, "✅ EDGE", "EDGE");
    
-   // Zone 8: EXTREME (10-100%) → Score 25
-   AddZone(10.0, 100.0, 25, "EXTREME", "EXT");
+   // Zone 7: TRANSITION (40-98%) → Score 45
+   AddZone(40.0, 98.0, 45, "⚠️ TRANSITION", "TRANS");
    
-   // Zone 9: VERY EXTREME (0-20%) → Score 15
-   AddZone(0.0, 20.0, 15, "VERY EXTREME", "V-EXT");
+   // Zone 8: TRANSITION EDGE (25-100%) → Score 35
+   AddZone(25.0, 100.0, 35, "⚠️ TRANSITION EDGE", "T-EDGE");
+   
+   // Zone 9: EXTREME (10-100%) → Score 25
+   AddZone(10.0, 100.0, 25, "⚠️ EXTREME", "EXT");
+   
+   // ──────────────────────────────────────────────────────────────
+   // ═══ NO GO ZONE (Score 0) - DO NOT TRADE ═══
+   // ──────────────────────────────────────────────────────────────
+   
+   // Zone 10: NO GO - OVEREXTENDED (90-100%) → Score 0
+   AddZone(90.0, 100.0, 0, "⚠️ NO GO - OVEREXTENDED", "OVER");
    
    LOG_DEBUG("✅ " + IntegerToString(m_zoneCount) + " zones initialized with fixed scores", 
+             g_pullbackDebugMode);
+   LOG_DEBUG("⚠️ NO GO ZONES: 0-20% and 90-100% (Score 0 - No Entry Allowed)", 
              g_pullbackDebugMode);
 }
 
@@ -224,7 +241,7 @@ void CPullbackModule::InitializeZones()
 void CPullbackModule::AddZone(double low, double high, int score, 
                               string name, string shortName)
 {
-   if(m_zoneCount >= 9) return;
+   if(m_zoneCount >= 10) return;
    
    m_zones[m_zoneCount].low = low;
    m_zones[m_zoneCount].high = high;
@@ -236,7 +253,7 @@ void CPullbackModule::AddZone(double low, double high, int score,
 
 //+------------------------------------------------------------------+
 //| GET SCORE BY ZONE - DIRECT LOOKUP (NO CALCULATIONS)            |
-//| O(n) where n = number of zones (max 9)                         |
+//| O(n) where n = number of zones (max 10)                        |
 //| Returns: FIXED score from zone definition                       |
 //+------------------------------------------------------------------+
 int CPullbackModule::GetScoreByZone(double pullbackPercent)
@@ -253,6 +270,16 @@ int CPullbackModule::GetScoreByZone(double pullbackPercent)
 }
 
 //+------------------------------------------------------------------+
+//| ═══ NEW: CHECK IF PULLBACK IS IN NO GO ZONE ═══               |
+//+------------------------------------------------------------------+
+bool CPullbackModule::IsNoGoZone(double pullbackPercent)
+{
+   // Check if pullback is in 0-20% or 90-100% range
+   return (pullbackPercent >= 0.0 && pullbackPercent <= 20.0) ||
+          (pullbackPercent >= 90.0 && pullbackPercent <= 100.0);
+}
+
+//+------------------------------------------------------------------+
 //| GET PULLBACK SCORE - Direct lookup only                        |
 //+------------------------------------------------------------------+
 int CPullbackModule::GetPullbackScore(RangeData &range, int trend)
@@ -266,8 +293,17 @@ int CPullbackModule::GetPullbackScore(RangeData &range, int trend)
    m_lastPullbackScore = score;
    m_lastPullbackPercent = p;
    
-   LOG_DEBUG(StringFormat("🎯 Score: %.1f%% → %d (Fixed zone lookup)", p, score),
-             g_pullbackDebugMode);
+   // ═══ LOG NO GO ZONE WARNING ═══
+   if(IsNoGoZone(p))
+   {
+      LOG_WARNING("⚠️⚠️⚠️ NO GO ZONE DETECTED! Pullback: " + DoubleToString(p, 1) + "% (Score: 0)");
+      LOG_WARNING("   NO ENTRIES ALLOWED in 0-20% or 90-100% zones");
+   }
+   else
+   {
+      LOG_DEBUG(StringFormat("🎯 Score: %.1f%% → %d (Fixed zone lookup)", p, score),
+                g_pullbackDebugMode);
+   }
    
    return score;
 }
@@ -388,6 +424,14 @@ RangeData CPullbackModule::DetectRange()
    m_lastPullbackPercent = range.pullbackPercent;
    m_lastPullbackScore = range.pullbackScore;
    m_lastPullbackZone = range.pullbackZone;
+   
+   // ═══ LOG NO GO ZONE WARNING ═══
+   if(IsNoGoZone(range.pullbackPercent))
+   {
+      LOG_WARNING("⚠️⚠️⚠️ NO GO ZONE DETECTED! Pullback: " + 
+                  DoubleToString(range.pullbackPercent, 1) + "% (Score: 0)");
+      LOG_WARNING("   NO ENTRIES ALLOWED in 0-20% or 90-100% zones");
+   }
    
    LOG_DEBUG(StringFormat("📊 Range: %.1f pips | Pullback: %.1f%% → Score: %d (Fixed)",
                           range.rangeSize/pointValue, range.pullbackPercent, range.pullbackScore),
@@ -568,7 +612,7 @@ int CPullbackModule::GetZoneLevel(double adjustedPercent)
 }
 
 //+------------------------------------------------------------------+
-//| GENERATE NARRATIVE                                              |
+//| GENERATE NARRATIVE - UPDATED WITH NO GO ZONES                  |
 //+------------------------------------------------------------------+
 string CPullbackModule::GenerateDetailedNarrative(RangeData &range, int trend, double confidence)
 {
@@ -578,11 +622,21 @@ string CPullbackModule::GenerateDetailedNarrative(RangeData &range, int trend, d
    string trendArrow = trend == 1 ? "📈" : (trend == -1 ? "📉" : "➡️");
    string narrative = "";
    
+   // ═══ NEW: NO GO ZONE CHECK ═══
+   if(IsNoGoZone(adjustedPercent))
+   {
+      narrative = StringFormat("%s 🚫🚫🚫 NO GO ZONE! Price at %.1f%% retracement.\n"
+                               "   ⚠️ 0-20%% or 90-100%% zones - NO ENTRIES ALLOWED!\n"
+                               "   Wait for price to pullback into the 55-90%% range.",
+                               trendArrow, adjustedPercent);
+      return narrative;
+   }
+   
    int level = GetZoneLevel(adjustedPercent);
    
    switch(level)
    {
-      case 9:
+      case 10:  // PERFECT PEAK
          narrative = StringFormat("%s PERFECT PEAK ZONE! Price at optimal %.1f%% retracement (76-80%%). "
                                   "This is the HIGHEST PROBABILITY entry point for %s continuation.",
                                   trendArrow, adjustedPercent, trendText);
@@ -590,43 +644,43 @@ string CPullbackModule::GenerateDetailedNarrative(RangeData &range, int trend, d
          else if(confidence >= 45) narrative += " Good setup with favorable risk-reward.";
          else narrative += " Monitor for confirmation before entering.";
          break;
-      case 8:
+      case 9:  // EXCELLENT
          narrative = StringFormat("%s EXCELLENT ZONE. Price at %.1f%% retracement (72-84%%) - very strong area.",
                                   trendArrow, adjustedPercent);
          if(confidence >= 55) narrative += " High confidence setup with excellent risk-reward.";
          else if(confidence >= 40) narrative += " Good setup, near optimal levels.";
          else narrative += " Consider waiting for the perfect peak (76-80%).";
          break;
-      case 7:
+      case 8:  // SWEET
          narrative = StringFormat("%s SWEET ZONE at %.1f%%. Price well within the sweet spot (65-90%%).",
                                   trendArrow, adjustedPercent);
          if(confidence >= 45) narrative += " Confident setup with favorable risk-reward.";
          else if(confidence >= 30) narrative += " Moderate confidence - acceptable entry.";
          else narrative += " Monitor for better entry closer to 78%.";
          break;
-      case 6:
+      case 7:  // NEAR SWEET
          narrative = StringFormat("%s NEAR SWEET ZONE at %.1f%%. Price approaching the sweet zone (60-95%%).",
                                   trendArrow, adjustedPercent);
          if(confidence >= 40) narrative += " Good setup - consider reduced position size.";
          else narrative += " Better to wait for price to enter the sweet zone (65-90%).";
          break;
-      case 5:
+      case 6:  // EDGE
          narrative = StringFormat("%s EDGE ZONE at %.1f%%. Price at the edge of the sweet zone (55-95%%).",
                                   trendArrow, adjustedPercent);
          if(confidence >= 35) narrative += " Consider reduced position size or wait for deeper pullback.";
          else narrative += " Better to wait for price to enter the sweet zone (65-90%).";
          break;
-      case 4:
+      case 5:  // TRANSITION
          narrative = StringFormat("%s TRANSITION ZONE at %.1f%%. Price is transitioning between zones.",
                                   trendArrow, adjustedPercent);
          narrative += " Wait for price to reach the sweet zone (65-90%) before entering.";
          break;
-      case 3:
+      case 4:  // TRANSITION EDGE
          narrative = StringFormat("%s TRANSITION EDGE at %.1f%%. Price is near the transition boundary.",
                                   trendArrow, adjustedPercent);
          narrative += " Strongly consider waiting for better entry conditions.";
          break;
-      case 2:
+      case 3:  // EXTREME
          narrative = StringFormat("%s EXTREME ZONE at %.1f%%. Price is at extreme levels.",
                                   trendArrow, adjustedPercent);
          narrative += " Avoid entering - wait for price to move into better zones.";
@@ -647,13 +701,25 @@ string CPullbackModule::GenerateDetailedNarrative(RangeData &range, int trend, d
 }
 
 //+------------------------------------------------------------------+
-//| GENERATE ACTION                                                 |
+//| GENERATE ACTION - UPDATED WITH NO GO ZONES                     |
 //+------------------------------------------------------------------+
 string CPullbackModule::GenerateAction(double adjustedPercent, double confidence)
 {
    // Use zone lookup
    int score = GetScoreByZone(adjustedPercent);
    
+   // ═══ NEW: NO GO ZONE ═══
+   if(score == 0)
+   {
+      if(adjustedPercent <= 20.0)
+         return "🚫 NO ENTRY - TOO EARLY (0-20%)";
+      else if(adjustedPercent >= 90.0)
+         return "🚫 NO ENTRY - OVEREXTENDED (90-100%)";
+      else
+         return "🚫 NO ENTRY - NO GO ZONE";
+   }
+   
+   // Existing logic
    if(score >= 100 && confidence >= 55) return "ENTER FULL - PERFECT PEAK";
    if(score >= 92 && confidence >= 45)  return "ENTER STD - EXCELLENT";
    if(score >= 80 && confidence >= 35)  return "ENTER STD - SWEET ZONE";
@@ -664,12 +730,16 @@ string CPullbackModule::GenerateAction(double adjustedPercent, double confidence
 }
 
 //+------------------------------------------------------------------+
-//| GENERATE RISK LEVEL                                             |
+//| GENERATE RISK LEVEL - UPDATED WITH NO GO ZONES                 |
 //+------------------------------------------------------------------+
 string CPullbackModule::GenerateRiskLevel(double adjustedPercent, double confidence)
 {
    int score = GetScoreByZone(adjustedPercent);
    
+   // ═══ NEW: NO GO ZONE ═══
+   if(score == 0) return "🚫 NO ENTRY";
+   
+   // Existing logic
    if(score >= 100 && confidence >= 55) return "Very Low";
    if(score >= 92 && confidence >= 45)  return "Low";
    if(score >= 80 && confidence >= 35)  return "Low-Medium";
@@ -725,7 +795,7 @@ string CPullbackModule::GetPullbackZone(RangeData &range, int trend)
 }
 
 //+------------------------------------------------------------------+
-//| GET PULLBACK ANALYSIS                                           |
+//| GET PULLBACK ANALYSIS - UPDATED WITH NO GO ZONES               |
 //+------------------------------------------------------------------+
 SPullbackAnalysisResult CPullbackModule::GetPullbackAnalysis()
 {
@@ -859,7 +929,7 @@ int CPullbackModule::GetTrendPublic() { return GetTrend(); }
 
 bool CPullbackModule::Initialize()
 {
-   LOG_DEBUG("✅ CPullbackModule v3.1 (Clean Zone) ready", g_pullbackDebugMode);
+   LOG_DEBUG("✅ CPullbackModule v3.2 (No Go Zones) ready", g_pullbackDebugMode);
    return true;
 }
 

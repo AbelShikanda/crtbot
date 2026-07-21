@@ -1,12 +1,11 @@
 //+------------------------------------------------------------------+
 //|                     PositionManager.mqh                          |
 //|              WITH PARTIAL CLOSE AT BREAKEVEN                    |
-//|              v3.1 - LOSS MANAGEMENT SUPPORT                     |
-//|              TP trails at 100 points when boost is active      |
-//|              NEVER moves TP backward                            |
+//|              v3.3 - MINIMAL DEBUG FOR SL TRACING               |
+//|              ONLY logs SL movements and ApplyTrailingStop calls |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
-#property version "3.1"
+#property version "3.3"
 
 #include "../Headers/Structures.mqh"
 #include "../Headers/Inputs.mqh"
@@ -15,9 +14,9 @@
 #include <Trade\Trade.mqh>
 
 //+------------------------------------------------------------------+
-//| GLOBAL DEBUG TOGGLE - SINGLE MAIN SWITCH                       |
+//| GLOBAL DEBUG TOGGLE - ONLY FOR SL TRACING                      |
 //+------------------------------------------------------------------+
-bool g_debugPositionManager = false;  // Set to true to enable all PositionManager debug logs
+bool g_debugPositionManager = true;  // SET TO TRUE TO TRACE SL MOVEMENTS
 
 //+------------------------------------------------------------------+
 //| Position Manager Class - With Boost-Aware TP Trailing          |
@@ -38,7 +37,7 @@ private:
    datetime          m_lastBoostCheck;      // Last time boost was checked
    int               m_boostCheckInterval;  // How often to check boost (seconds)
    
-   // ═══ NEW: Loss Management Settings (mirrored from PortfolioManager) ═══
+   // Loss Management Settings
    bool              m_lossManagementEnabled;
    double            m_lossCloseConfidence;
    
@@ -57,18 +56,18 @@ private:
    double GetBoostTPDistance();
    double GetCurrentBoost() const { return m_currentBoost; }
    
+   // ═══ DEBUG: ONLY LOG SL MOVEMENTS ═══
+   void LogSLMovement(ulong ticket, string source, double oldSL, double newSL, double profitPips, string reason);
+   
 public:
    CPositionManager(string symbol, int magicNumber, CTrade &trade);
    ~CPositionManager();
    
-   // Set Portfolio Manager reference
    void SetPortfolioManager(CPortfolioManager* portfolioManager) 
    { 
       m_portfolioManager = portfolioManager; 
-      LOG_INFO("Portfolio Manager connected to Position Manager", g_debugPositionManager);
    }
    
-   // ═══ NEW: Loss Management Configuration ═══
    void SetLossManagementEnabled(bool enable) { m_lossManagementEnabled = enable; }
    void SetLossCloseConfidence(double confidence) { m_lossCloseConfidence = confidence; }
    bool IsLossManagementEnabled() const { return m_lossManagementEnabled; }
@@ -98,11 +97,9 @@ public:
    
    void PrintStates();
    
-   // Debug control
    static void SetGlobalDebug(bool enable) { g_debugPositionManager = enable; }
    static bool GetGlobalDebug() { return g_debugPositionManager; }
    
-   // Boost control
    void SetBoostCheckInterval(int seconds) { m_boostCheckInterval = seconds; }
    void SetBoostTPDistance(double points) { m_boostTPDistance = points; }
 };
@@ -112,8 +109,7 @@ public:
 //+------------------------------------------------------------------+
 CPositionManager::CPositionManager(string symbol, int magicNumber, CTrade &trade)
 {
-   LOG_DEBUG("CPositionManager constructor called for " + symbol, g_debugPositionManager);
-   
+   // NO LOGGING - Constructor
    m_symbol = symbol;
    m_magicNumber = magicNumber;
    m_trade = &trade;
@@ -123,16 +119,9 @@ CPositionManager::CPositionManager(string symbol, int magicNumber, CTrade &trade
    m_lastBoostCheck = 0;
    m_boostCheckInterval = 2;
    m_boostTPDistance = 100.0;
-   
-   // ═══ NEW: Loss Management Settings ═══
    m_lossManagementEnabled = true;
    m_lossCloseConfidence = 30.0;
-   
    ArrayResize(m_states, 0);
-   
-   LOG_INFO("Position Manager v3.1 initialized for " + symbol + " (Magic: " + IntegerToString(magicNumber) + ")", true);
-   LOG_INFO("Boost TP distance: " + DoubleToString(m_boostTPDistance, 0) + " points", g_debugPositionManager);
-   LOG_INFO("Loss Management: " + (m_lossManagementEnabled ? "ENABLED" : "DISABLED"), g_debugPositionManager);
 }
 
 //+------------------------------------------------------------------+
@@ -140,45 +129,21 @@ CPositionManager::CPositionManager(string symbol, int magicNumber, CTrade &trade
 //+------------------------------------------------------------------+
 CPositionManager::~CPositionManager()
 {
-   LOG_DEBUG("CPositionManager destructor called", g_debugPositionManager);
-   LOG_INFO("Position Manager destroyed", g_debugPositionManager);
+   // NO LOGGING
 }
 
 //+------------------------------------------------------------------+
-//| Update Boost - Check Portfolio Manager for boost               |
+//| Update Boost                                                    |
 //+------------------------------------------------------------------+
 void CPositionManager::UpdateBoost()
 {
-   g_debugPositionManager = false;  // Enable debug for this method
-   if(m_portfolioManager == NULL)
-   {
-      LOG_DEBUG("Portfolio Manager not connected - boost unavailable", g_debugPositionManager);
-      return;
-   }
+   if(m_portfolioManager == NULL) return;
    
    datetime now = TimeCurrent();
-   if(now - m_lastBoostCheck < m_boostCheckInterval)
-      return;
+   if(now - m_lastBoostCheck < m_boostCheckInterval) return;
    
    m_lastBoostCheck = now;
-   
-   bool wasBoostActive = (m_currentBoost > 0);
-   
    m_currentBoost = m_portfolioManager.GetBoostPercentage();
-   bool isBoostActive = (m_currentBoost > 0);
-   
-   if(isBoostActive && !wasBoostActive)
-   {
-      LOG_TRADE("🚀🚀🚀 BOOST STARTED! TP will trail at " + DoubleToString(m_boostTPDistance, 0) + " points");
-   }
-   else if(!isBoostActive && wasBoostActive)
-   {
-      LOG_WARNING("⛔⛔⛔ BOOST ENDED! TP trailing stopped");
-   }
-   else if(isBoostActive && g_debugPositionManager)
-   {
-      LOG_DEBUG("📊 Boost ACTIVE: +" + DoubleToString(m_currentBoost, 1) + "%", g_debugPositionManager);
-   }
 }
 
 //+------------------------------------------------------------------+
@@ -191,7 +156,7 @@ bool CPositionManager::IsBoostActive()
 }
 
 //+------------------------------------------------------------------+
-//| Get Boost TP Distance - Always 100 points when boost active    |
+//| Get Boost TP Distance                                           |
 //+------------------------------------------------------------------+
 double CPositionManager::GetBoostTPDistance()
 {
@@ -203,18 +168,12 @@ double CPositionManager::GetBoostTPDistance()
 //+------------------------------------------------------------------+
 bool CPositionManager::IsOurPosition(ulong ticket)
 {
-   if(!PositionSelectByTicket(ticket))
-   {
-      LOG_DEBUG("Cannot select position #" + IntegerToString(ticket), g_debugPositionManager);
-      return false;
-   }
+   if(!PositionSelectByTicket(ticket)) return false;
    
    int magic = (int)PositionGetInteger(POSITION_MAGIC);
    string symbol = PositionGetString(POSITION_SYMBOL);
    
-   bool isOurs = (magic == m_magicNumber && symbol == m_symbol);
-   LOG_DEBUG("Position #" + IntegerToString(ticket) + " is ours: " + (isOurs ? "YES" : "NO"), g_debugPositionManager);
-   return isOurs;
+   return (magic == m_magicNumber && symbol == m_symbol);
 }
 
 //+------------------------------------------------------------------+
@@ -222,12 +181,7 @@ bool CPositionManager::IsOurPosition(ulong ticket)
 //+------------------------------------------------------------------+
 bool CPositionManager::IsPositionStillOpen(ulong ticket)
 {
-   if(!PositionSelectByTicket(ticket))
-   {
-      LOG_DEBUG("Position #" + IntegerToString(ticket) + " no longer open", g_debugPositionManager);
-      return false;
-   }
-   
+   if(!PositionSelectByTicket(ticket)) return false;
    return IsOurPosition(ticket);
 }
 
@@ -238,10 +192,8 @@ int CPositionManager::FindStateIndex(ulong ticket)
 {
    for(int i = 0; i < ArraySize(m_states); i++)
    {
-      if(m_states[i].ticket == ticket)
-         return i;
+      if(m_states[i].ticket == ticket) return i;
    }
-   LOG_DEBUG("State not found for ticket #" + IntegerToString(ticket), g_debugPositionManager);
    return -1;
 }
 
@@ -251,17 +203,12 @@ int CPositionManager::FindStateIndex(ulong ticket)
 void CPositionManager::RemoveState(ulong ticket)
 {
    int idx = FindStateIndex(ticket);
-   if(idx == -1) 
-   {
-      LOG_DEBUG("Cannot remove state - not found for #" + IntegerToString(ticket), g_debugPositionManager);
-      return;
-   }
+   if(idx == -1) return;
    
    for(int i = idx; i < ArraySize(m_states) - 1; i++)
       m_states[i] = m_states[i + 1];
    
    ArrayResize(m_states, ArraySize(m_states) - 1);
-   LOG_DEBUG("State removed for #" + IntegerToString(ticket), g_debugPositionManager);
 }
 
 //+------------------------------------------------------------------+
@@ -278,9 +225,7 @@ double CPositionManager::NormalizeLotSize(double lotSize)
    lotSize = MathRound(lotSize / step) * step;
    lotSize = MathMax(min, MathMin(max, lotSize));
    
-   double normalized = NormalizeDouble(lotSize, 2);
-   LOG_DEBUG("Lot normalized: " + DoubleToString(lotSize, 2) + " -> " + DoubleToString(normalized, 2), g_debugPositionManager);
-   return normalized;
+   return NormalizeDouble(lotSize, 2);
 }
 
 //+------------------------------------------------------------------+
@@ -288,39 +233,20 @@ double CPositionManager::NormalizeLotSize(double lotSize)
 //+------------------------------------------------------------------+
 double CPositionManager::CalculatePartialCloseVolume(double currentVolume, double closePercent)
 {
-   LOG_DEBUG("CalculatePartialCloseVolume: currentVolume=" + DoubleToString(currentVolume, 2) + ", closePercent=" + DoubleToString(closePercent * 100, 0) + "%", g_debugPositionManager);
-   
    double closeVolume = currentVolume * closePercent;
    double minLot = SymbolInfoDouble(m_symbol, SYMBOL_VOLUME_MIN);
    double step = SymbolInfoDouble(m_symbol, SYMBOL_VOLUME_STEP);
    
-   if(closeVolume < minLot)
-   {
-      LOG_WARNING("⚠️ Partial close volume (" + DoubleToString(closeVolume, 2) + 
-          ") below minimum lot (" + DoubleToString(minLot, 2) + ")");
-      return 0;
-   }
+   if(closeVolume < minLot) return 0;
    
    closeVolume = MathRound(closeVolume / step) * step;
    closeVolume = NormalizeDouble(closeVolume, 2);
    
    double remainingVolume = currentVolume - closeVolume;
-   if(remainingVolume < minLot)
-   {
-      LOG_WARNING("⚠️ Remaining volume (" + DoubleToString(remainingVolume, 2) + 
-          ") below minimum lot (" + DoubleToString(minLot, 2) + ")");
-      return 0;
-   }
+   if(remainingVolume < minLot) return 0;
    
-   if(currentVolume < minLot * 2)
-   {
-      LOG_WARNING("⚠️ Position volume (" + DoubleToString(currentVolume, 2) + 
-          ") too small for partial close (need at least " + 
-          DoubleToString(minLot * 2, 2) + ")");
-      return 0;
-   }
+   if(currentVolume < minLot * 2) return 0;
    
-   LOG_DEBUG("Partial close volume: " + DoubleToString(closeVolume, 2), g_debugPositionManager);
    return closeVolume;
 }
 
@@ -329,45 +255,17 @@ double CPositionManager::CalculatePartialCloseVolume(double currentVolume, doubl
 //+------------------------------------------------------------------+
 bool CPositionManager::PartialClosePosition(ulong ticket, double closePercent)
 {
-   LOG_DEBUG("PartialClosePosition called for #" + IntegerToString(ticket) + " with " + DoubleToString(closePercent * 100, 0) + "%", g_debugPositionManager);
-   
    if(!PositionSelectByTicket(ticket))
    {
-      LOG_ERROR("Cannot select position #" + IntegerToString(ticket));
       return false;
    }
    
    double currentVolume = PositionGetDouble(POSITION_VOLUME);
    double closeVolume = CalculatePartialCloseVolume(currentVolume, closePercent);
    
-   if(closeVolume <= 0)
-   {
-      LOG_ERROR("Partial close volume invalid: " + DoubleToString(closeVolume, 2));
-      return false;
-   }
+   if(closeVolume <= 0) return false;
    
-   double remainingVolume = currentVolume - closeVolume;
-   double minLot = SymbolInfoDouble(m_symbol, SYMBOL_VOLUME_MIN);
-   
-   if(remainingVolume < minLot)
-   {
-      LOG_ERROR("Remaining volume too small: " + DoubleToString(remainingVolume, 2));
-      return false;
-   }
-   
-   LOG_TRADE("═══════════════════════════════════════════════════════════");
-   LOG_TRADE("📊📊📊 PARTIAL CLOSE EXECUTED! 📊📊📊");
-   LOG_TRADE("   Position #" + IntegerToString(ticket));
-   LOG_TRADE("   Closing: " + DoubleToString(closePercent * 100, 0) + "% (" + 
-       DoubleToString(closeVolume, 2) + " lots)");
-   LOG_TRADE("   Remaining: " + DoubleToString(remainingVolume, 2) + " lots");
-   LOG_TRADE("═══════════════════════════════════════════════════════════");
-   
-   if(!m_trade.PositionClosePartial(ticket, closeVolume))
-   {
-      LOG_ERROR("Partial close failed for #" + IntegerToString(ticket));
-      return false;
-   }
+   if(!m_trade.PositionClosePartial(ticket, closeVolume)) return false;
    
    int idx = FindStateIndex(ticket);
    if(idx != -1)
@@ -380,7 +278,6 @@ bool CPositionManager::PartialClosePosition(ulong ticket, double closePercent)
       }
    }
    
-   LOG_DEBUG("Partial close successful for #" + IntegerToString(ticket), g_debugPositionManager);
    return true;
 }
 
@@ -389,28 +286,10 @@ bool CPositionManager::PartialClosePosition(ulong ticket, double closePercent)
 //+------------------------------------------------------------------+
 bool CPositionManager::ExecuteTrade(PrescribedTrade &signal, double lotSize)
 {
-   g_debugPositionManager = true;  // Enable debug for this method
-   LOG_DEBUG("ExecuteTrade called for signal " + IntegerToString(signal.signal), g_debugPositionManager);
-   
-   if(PositionsTotal() >= InpMaxPositions)
-   {
-      LOG_WARNING("⚠️ Max positions reached");
-      return false;
-   }
+   if(PositionsTotal() >= InpMaxPositions) return false;
    
    lotSize = NormalizeLotSize(lotSize);
-   if(lotSize <= 0)
-   {
-      LOG_ERROR("Invalid lot size");
-      return false;
-   }
-   
-   LOG_DEBUG("🔍🔍🔍 POSITION MANAGER RECEIVED:", g_debugPositionManager);
-   LOG_DEBUG("   signal.signal = " + IntegerToString(signal.signal), g_debugPositionManager);
-   LOG_DEBUG("   signal.entryPrice = " + DoubleToString(signal.entryPrice, _Digits), g_debugPositionManager);
-   LOG_DEBUG("   signal.stopLoss = " + DoubleToString(signal.stopLoss, _Digits), g_debugPositionManager);
-   LOG_DEBUG("   signal.takeProfit = " + DoubleToString(signal.takeProfit, _Digits), g_debugPositionManager);
-   LOG_DEBUG("   lotSize = " + DoubleToString(lotSize, 2), g_debugPositionManager);
+   if(lotSize <= 0) return false;
    
    MqlTradeRequest request = {};
    MqlTradeResult result = {};
@@ -438,40 +317,21 @@ bool CPositionManager::ExecuteTrade(PrescribedTrade &signal, double lotSize)
       request.tp = signal.takeProfit;
    }
    
-   if(!m_trade.OrderSend(request, result))
-   {
-      LOG_ERROR("Trade failed: " + IntegerToString(result.retcode));
-      return false;
-   }
+   if(!m_trade.OrderSend(request, result)) return false;
    
    if(result.retcode == TRADE_RETCODE_DONE)
    {
-      LOG_TRADE("✅ Trade executed at " + DoubleToString(request.price, _Digits));
-      LOG_INFO("📊 SL: " + DoubleToString(signal.stopLoss, _Digits) + 
-          " | TP: " + DoubleToString(signal.takeProfit, _Digits), g_debugPositionManager);
-      
       AddState(result.order, signal, lotSize);
       
-      // ============================================================
-      // ═══ FIX: NOTIFY PORTFOLIO MANAGER ABOUT NEW POSITION ═══
-      // ============================================================
       if(m_portfolioManager != NULL)
       {
          m_portfolioManager.OnTradeOpened(result.order, signal.entryPrice, signal.stopLoss);
-         LOG_DEBUG("✅ PortfolioManager notified about position #" + IntegerToString(result.order), g_debugPositionManager);
-      }
-      else
-      {
-         LOG_WARNING("⚠️ PortfolioManager is NULL - position not being monitored");
       }
       
       return true;
    }
-   else
-   {
-      LOG_ERROR("Trade failed: " + IntegerToString(result.retcode));
-      return false;
-   }
+   
+   return false;
 }
 
 //+------------------------------------------------------------------+
@@ -479,14 +339,8 @@ bool CPositionManager::ExecuteTrade(PrescribedTrade &signal, double lotSize)
 //+------------------------------------------------------------------+
 void CPositionManager::AddState(ulong ticket, PrescribedTrade &signal, double lotSize)
 {
-   LOG_DEBUG("AddState called for #" + IntegerToString(ticket), g_debugPositionManager);
-   
    int idx = FindStateIndex(ticket);
-   if(idx != -1)
-   {
-      LOG_WARNING("⚠️ State already exists for #" + IntegerToString(ticket));
-      return;
-   }
+   if(idx != -1) return;
    
    int newIdx = ArraySize(m_states);
    ArrayResize(m_states, newIdx + 1);
@@ -509,8 +363,6 @@ void CPositionManager::AddState(ulong ticket, PrescribedTrade &signal, double lo
    m_states[newIdx].boostActive = false;
    m_states[newIdx].boostTPDistance = m_boostTPDistance;
    m_states[newIdx].lastBoostTP = signal.takeProfit;
-   
-   LOG_INFO("✅ State added for #" + IntegerToString(ticket) + " (Volume: " + DoubleToString(lotSize, 2) + ")", g_debugPositionManager);
 }
 
 //+------------------------------------------------------------------+
@@ -518,24 +370,16 @@ void CPositionManager::AddState(ulong ticket, PrescribedTrade &signal, double lo
 //+------------------------------------------------------------------+
 bool CPositionManager::GetState(ulong ticket, PositionState &state)
 {
-   LOG_DEBUG("GetState called for #" + IntegerToString(ticket), g_debugPositionManager);
-   
    if(!IsPositionStillOpen(ticket))
    {
-      LOG_DEBUG("Position #" + IntegerToString(ticket) + " not open, removing state", g_debugPositionManager);
       RemoveState(ticket);
       return false;
    }
    
    int idx = FindStateIndex(ticket);
-   if(idx == -1)
-   {
-      LOG_DEBUG("State not found for #" + IntegerToString(ticket), g_debugPositionManager);
-      return false;
-   }
+   if(idx == -1) return false;
    
    state = m_states[idx];
-   LOG_DEBUG("State retrieved for #" + IntegerToString(ticket), g_debugPositionManager);
    return true;
 }
 
@@ -544,9 +388,7 @@ bool CPositionManager::GetState(ulong ticket, PositionState &state)
 //+------------------------------------------------------------------+
 int CPositionManager::GetOpenPositionCount()
 {
-   int count = PositionsTotal();
-   LOG_DEBUG("Open position count: " + IntegerToString(count), g_debugPositionManager);
-   return count;
+   return PositionsTotal();
 }
 
 //+------------------------------------------------------------------+
@@ -554,9 +396,23 @@ int CPositionManager::GetOpenPositionCount()
 //+------------------------------------------------------------------+
 bool CPositionManager::HasOpenPositions()
 {
-   bool hasPos = PositionsTotal() > 0;
-   LOG_DEBUG("Has open positions: " + (hasPos ? "YES" : "NO"), g_debugPositionManager);
-   return hasPos;
+   return PositionsTotal() > 0;
+}
+
+//+------------------------------------------------------------------+
+//| ═══ SL MOVEMENT LOG - CRITICAL ONLY ═══                        |
+//+------------------------------------------------------------------+
+void CPositionManager::LogSLMovement(ulong ticket, string source, double oldSL, double newSL, double profitPips, string reason)
+{
+   // ALWAYS SHOW THIS - Critical for debugging
+   Print("🔍🔍🔍 SL MOVEMENT DETECTED! 🔍🔍🔍");
+   Print("   Position: #", ticket);
+   Print("   Source: ", source);
+   Print("   Old SL: ", DoubleToString(oldSL, _Digits));
+   Print("   New SL: ", DoubleToString(newSL, _Digits));
+   Print("   Profit: ", DoubleToString(profitPips, 1), " pips");
+   Print("   Reason: ", reason);
+   Print("   ═══════════════════════════════════════");
 }
 
 //+------------------------------------------------------------------+
@@ -564,22 +420,13 @@ bool CPositionManager::HasOpenPositions()
 //+------------------------------------------------------------------+
 void CPositionManager::ManagePositions()
 {
-   LOG_DEBUG("ManagePositions called - " + IntegerToString(PositionsTotal()) + " total positions", g_debugPositionManager);
-   
-   // Update boost status at start of each cycle
+   // Update boost status
    bool hasBoost = IsBoostActive();
    
-   // ═══ NEW: Sync loss management settings from PortfolioManager ═══
    if(m_portfolioManager != NULL)
    {
       m_lossManagementEnabled = m_portfolioManager.IsLossManagementEnabled();
       m_lossCloseConfidence = m_portfolioManager.GetLossCloseConfidence();
-   }
-   
-   if(hasBoost && g_debugPositionManager)
-   {
-      LOG_DEBUG("🚀 BOOST ACTIVE: +" + DoubleToString(m_currentBoost, 1) + "% - TP trailing at " + 
-          DoubleToString(m_boostTPDistance, 0) + " points", g_debugPositionManager);
    }
    
    for(int i = PositionsTotal() - 1; i >= 0; i--)
@@ -587,13 +434,11 @@ void CPositionManager::ManagePositions()
       ulong ticket = PositionGetTicket(i);
       if(ticket <= 0) continue;
       
-      if(!IsOurPosition(ticket))
-         continue;
+      if(!IsOurPosition(ticket)) continue;
       
       PositionState state;
       if(!GetState(ticket, state))
       {
-         LOG_WARNING("⚠️ Position #" + IntegerToString(ticket) + " has no state - creating...");
          PositionSelectByTicket(ticket);
          
          PrescribedTrade tempSignal;
@@ -614,23 +459,18 @@ void CPositionManager::ManagePositions()
 }
 
 //+------------------------------------------------------------------+
-//| Manage Single Position - WITH BOOST-AWARE TP TRAILING          |
+//| Manage Single Position - WITH SL TRACING                        |
 //+------------------------------------------------------------------+
 void CPositionManager::ManageSinglePosition(ulong ticket)
 {
-   g_debugPositionManager = false;  // Enable debug for this method
-   LOG_DEBUG("ManageSinglePosition called for #" + IntegerToString(ticket), g_debugPositionManager);
-   
    if(!PositionSelectByTicket(ticket))
    {
-      LOG_DEBUG("Cannot select position #" + IntegerToString(ticket) + " - removing state", g_debugPositionManager);
       RemoveState(ticket);
       return;
    }
    
    PositionState state;
-   if(!GetState(ticket, state))
-      return;
+   if(!GetState(ticket, state)) return;
    
    double currentPrice = SymbolInfoDouble(m_symbol, SYMBOL_BID);
    double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
@@ -643,56 +483,44 @@ void CPositionManager::ManageSinglePosition(ulong ticket)
    double profitPips = isBuy ? (currentPrice - openPrice) / point 
                              : (openPrice - currentPrice) / point;
    
-   LOG_DEBUG("Position #" + IntegerToString(ticket) + " | Profit: " + DoubleToString(profitPips, 1) + " pips | Boost: " + (hasBoost ? "ACTIVE" : "INACTIVE"), g_debugPositionManager);
+   double currentSL = PositionGetDouble(POSITION_SL);
+   double currentTP = PositionGetDouble(POSITION_TP);
    
    // ═══════════════════════════════════════════════════════════
-   // STEP 1: BREAKEVEN MANAGEMENT WITH PARTIAL CLOSE
+   // STEP 1: BREAKEVEN MANAGEMENT
    // ═══════════════════════════════════════════════════════════
    if(InpUseBreakeven && !state.isBreakevenSet)
    {
       if(profitPips >= InpBreakevenPips)
       {
-         LOG_TRADE("═══════════════════════════════════════════════════════════");
-         LOG_TRADE("📈📈📈 BREAKEVEN TRIGGERED! 📈📈📈");
-         LOG_TRADE("   Position #" + IntegerToString(ticket));
-         LOG_TRADE("   Profit: " + DoubleToString(profitPips, 1) + " pips");
-         LOG_TRADE("   Threshold: " + IntegerToString(InpBreakevenPips) + " pips");
-         LOG_TRADE("═══════════════════════════════════════════════════════════");
+         double oldSL = currentSL;
          
          if(!state.isPartialCloseDone && state.openVolume > 0)
          {
             double minLot = SymbolInfoDouble(m_symbol, SYMBOL_VOLUME_MIN);
-            
             if(state.openVolume >= minLot * 2)
             {
-               LOG_TRADE("🔹🔹🔹 ATTEMPTING PARTIAL CLOSE (50%) 🔹🔹🔹");
+               PartialClosePosition(ticket, 0.5);
                
-               if(PartialClosePosition(ticket, 0.5))
+               int idx = FindStateIndex(ticket);
+               if(idx != -1)
                {
-                  LOG_TRADE("✅ 50% partial close executed successfully!");
-                  
-                  int idx = FindStateIndex(ticket);
-                  if(idx != -1)
+                  m_states[idx].isPartialCloseDone = true;
+                  m_states[idx].isBreakevenSet = true;
+                  if(PositionSelectByTicket(ticket))
                   {
-                     m_states[idx].isPartialCloseDone = true;
-                     m_states[idx].isBreakevenSet = true;
-                     
-                     if(PositionSelectByTicket(ticket))
-                     {
-                        m_states[idx].openVolume = PositionGetDouble(POSITION_VOLUME);
-                     }
+                     m_states[idx].openVolume = PositionGetDouble(POSITION_VOLUME);
                   }
                }
-               else
-               {
-                  LOG_ERROR("❌ Partial close failed - continuing with breakeven only");
-               }
             }
-            else
-            {
-               LOG_WARNING("⚠️ Position too small for partial close (" + 
-                   DoubleToString(state.openVolume, 2) + " lots)");
-            }
+         }
+         
+         double newSL = isBuy ? openPrice + (5 * point) : openPrice - (5 * point);
+         
+         // ═══ LOG BREAKEVEN SL MOVEMENT ═══
+         if(newSL != oldSL)
+         {
+            LogSLMovement(ticket, "BREAKEVEN", oldSL, newSL, profitPips, "Breakeven triggered at " + IntegerToString(InpBreakevenPips) + " pips");
          }
          
          SetBreakeven(ticket, isBuy);
@@ -703,8 +531,6 @@ void CPositionManager::ManageSinglePosition(ulong ticket)
             m_states[idx].isBreakevenSet = true;
             m_states[idx].lastTrailSL = PositionGetDouble(POSITION_SL);
          }
-         
-         LOG_INFO("📈 Breakeven set for position #" + IntegerToString(ticket), g_debugPositionManager);
       }
    }
    
@@ -713,59 +539,40 @@ void CPositionManager::ManageSinglePosition(ulong ticket)
    // ═══════════════════════════════════════════════════════════
    if(InpUseTrailingStop)
    {
-      double currentSL = PositionGetDouble(POSITION_SL);
-      double currentTP = PositionGetDouble(POSITION_TP);
+      if(PositionSelectByTicket(ticket))
+      {
+         currentSL = PositionGetDouble(POSITION_SL);
+         currentTP = PositionGetDouble(POSITION_TP);
+      }
       
       if(profitPips >= InpTrailingStartPips)
       {
          double newSL = 0;
          double trailDistance = InpTrailingStopPips * point;
          bool slMoved = false;
+         double oldSL = currentSL;
          
          if(isBuy)
          {
             newSL = currentPrice - trailDistance;
-            if(newSL > currentSL)
-            {
-               slMoved = true;
-            }
+            if(newSL > currentSL) slMoved = true;
          }
          else
          {
             newSL = currentPrice + trailDistance;
-            if(newSL < currentSL)
-            {
-               slMoved = true;
-            }
+            if(newSL < currentSL) slMoved = true;
          }
          
          if(slMoved)
          {
-            LOG_TRADE("═══════════════════════════════════════════════════════════");
-            LOG_TRADE("🔹🔹🔹 TRAILING STOP MOVED! 🔹🔹🔹");
-            LOG_TRADE("   Position #" + IntegerToString(ticket));
-            LOG_TRADE("   Old SL: " + DoubleToString(currentSL, _Digits));
-            LOG_TRADE("   New SL: " + DoubleToString(newSL, _Digits));
-            LOG_TRADE("   Profit: " + DoubleToString(profitPips, 1) + " pips");
-            LOG_TRADE("═══════════════════════════════════════════════════════════");
+            // ═══ LOG TRAILING SL MOVEMENT ═══
+            LogSLMovement(ticket, "TRAILING_STOP", currentSL, newSL, profitPips, "Trailing stop at " + IntegerToString(InpTrailingStopPips) + " pips behind price");
             
             double newTP = currentTP;
             
-            // ═══════════════════════════════════════════════════════════
-            // STEP 3: TP TRAILING - ONLY WHEN BOOST ACTIVE
-            // Keeps TP at fixed 100 points from current price
-            // NEVER moves backward
-            // ═══════════════════════════════════════════════════════════
             if(hasBoost)
             {
                newTP = ApplyTrailingTP(ticket, isBuy);
-            }
-            else
-            {
-               if(g_debugPositionManager)
-               {
-                  LOG_DEBUG("⛔ Boost ended - TP frozen at " + DoubleToString(currentTP, _Digits), g_debugPositionManager);
-               }
             }
             
             if(newSL != currentSL || newTP != currentTP)
@@ -779,10 +586,7 @@ void CPositionManager::ManageSinglePosition(ulong ticket)
                   m_states[idx].lastTrailTP = newTP;
                   m_states[idx].isTrailingActive = true;
                   m_states[idx].boostActive = hasBoost;
-                  if(hasBoost)
-                  {
-                     m_states[idx].lastBoostTP = newTP;
-                  }
+                  if(hasBoost) m_states[idx].lastBoostTP = newTP;
                }
             }
          }
@@ -791,19 +595,11 @@ void CPositionManager::ManageSinglePosition(ulong ticket)
 }
 
 //+------------------------------------------------------------------+
-//| Apply Trailing TP - ONLY when boost active                      |
-//| Keeps TP at fixed 100 points from current price                |
-//| NEVER moves backward                                            |
+//| Apply Trailing TP                                               |
 //+------------------------------------------------------------------+
 double CPositionManager::ApplyTrailingTP(ulong ticket, bool isBuy)
 {
-   LOG_DEBUG("ApplyTrailingTP called for #" + IntegerToString(ticket) + " (isBuy=" + (isBuy ? "true" : "false") + ")", g_debugPositionManager);
-   
-   if(!PositionSelectByTicket(ticket))
-   {
-      LOG_ERROR("Cannot select position #" + IntegerToString(ticket));
-      return 0;
-   }
+   if(!PositionSelectByTicket(ticket)) return 0;
    
    double currentTP = PositionGetDouble(POSITION_TP);
    double currentPrice = isBuy ? SymbolInfoDouble(m_symbol, SYMBOL_BID)
@@ -817,44 +613,15 @@ double CPositionManager::ApplyTrailingTP(ulong ticket, bool isBuy)
    if(isBuy)
    {
       newTP = currentPrice + tpDistance;
-      if(newTP > currentTP)
-      {
-         shouldMove = true;
-      }
+      if(newTP > currentTP) shouldMove = true;
    }
    else
    {
       newTP = currentPrice - tpDistance;
-      if(newTP < currentTP)
-      {
-         shouldMove = true;
-      }
+      if(newTP < currentTP) shouldMove = true;
    }
    
-   if(shouldMove)
-   {
-      LOG_TRADE("═══════════════════════════════════════════════");
-      LOG_TRADE("📈📈📈 TP TRAILING (BOOST ACTIVE) 📈📈📈");
-      LOG_TRADE("   Position #" + IntegerToString(ticket));
-      LOG_TRADE("   TP Distance: " + DoubleToString(m_boostTPDistance, 0) + " points");
-      LOG_TRADE("   Current Price: " + DoubleToString(currentPrice, _Digits));
-      LOG_TRADE("   Old TP: " + DoubleToString(currentTP, _Digits));
-      LOG_TRADE("   New TP: " + DoubleToString(newTP, _Digits));
-      LOG_TRADE("   Move: " + (isBuy ? "UP (BUY)" : "DOWN (SELL)"));
-      LOG_TRADE("═══════════════════════════════════════════════");
-      
-      return newTP;
-   }
-   else
-   {
-      if(g_debugPositionManager)
-      {
-         LOG_DEBUG("⏳ TP NOT MOVED - would move backward", g_debugPositionManager);
-         LOG_DEBUG("   Current TP: " + DoubleToString(currentTP, _Digits), g_debugPositionManager);
-         LOG_DEBUG("   Proposed TP: " + DoubleToString(newTP, _Digits), g_debugPositionManager);
-      }
-   }
-   
+   if(shouldMove) return newTP;
    return currentTP;
 }
 
@@ -863,43 +630,112 @@ double CPositionManager::ApplyTrailingTP(ulong ticket, bool isBuy)
 //+------------------------------------------------------------------+
 void CPositionManager::SetBreakeven(ulong ticket, bool isBuy)
 {
-   LOG_DEBUG("SetBreakeven called for #" + IntegerToString(ticket), g_debugPositionManager);
-   
-   if(!PositionSelectByTicket(ticket))
-   {
-      LOG_ERROR("Cannot select position #" + IntegerToString(ticket));
-      return;
-   }
+   if(!PositionSelectByTicket(ticket)) return;
    
    double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
    double point = SymbolInfoDouble(m_symbol, SYMBOL_POINT);
    double currentTP = PositionGetDouble(POSITION_TP);
+   double currentSL = PositionGetDouble(POSITION_SL);
    
-   double breakevenSL = isBuy ? entryPrice + (5 * point) 
-                               : entryPrice - (5 * point);
+   // ═══════════════════════════════════════════════════════════
+   // ═══ USE INPUT FOR BREAKEVEN BUFFER ═══
+   // InpBreakevenBuffer is defined in Inputs.mqh
+   // Default: 50 pips (0.50 points for Gold)
+   // ═══════════════════════════════════════════════════════════
+   double bufferPoints = InpBreakevenBuffer * point;  // Convert pips to points
    
-   LOG_DEBUG("Breakeven SL: " + DoubleToString(breakevenSL, _Digits), g_debugPositionManager);
+   double breakevenSL = isBuy ? entryPrice + bufferPoints 
+                               : entryPrice - bufferPoints;
+   
+   // ═══════════════════════════════════════════════════════════
+   // SAFETY CHECK: Ensure SL stays on the correct side
+   // ═══════════════════════════════════════════════════════════
+   double currentPrice = isBuy ? SymbolInfoDouble(m_symbol, SYMBOL_BID) 
+                                : SymbolInfoDouble(m_symbol, SYMBOL_ASK);
+   
+   if(isBuy)
+   {
+      // BUY: breakeven SL must be BELOW current price
+      if(breakevenSL >= currentPrice)
+      {
+         // Adjust to keep some buffer below current price
+         breakevenSL = currentPrice - (10 * point);
+         LOG_DEBUG("⚠️ Breakeven SL adjusted below current price", g_debugPositionManager);
+      }
+      
+      // BUY: breakeven SL must be ABOVE entry (for profit)
+      if(breakevenSL <= entryPrice)
+      {
+         // Force at least minimum buffer above entry
+         breakevenSL = entryPrice + (MathMax(InpBreakevenBuffer, 10) * point);
+         LOG_DEBUG("⚠️ Breakeven SL adjusted above entry", g_debugPositionManager);
+      }
+   }
+   else  // SELL
+   {
+      // SELL: breakeven SL must be ABOVE current price
+      if(breakevenSL <= currentPrice)
+      {
+         breakevenSL = currentPrice + (10 * point);
+         LOG_DEBUG("⚠️ Breakeven SL adjusted above current price", g_debugPositionManager);
+      }
+      
+      // SELL: breakeven SL must be BELOW entry (for profit)
+      if(breakevenSL >= entryPrice)
+      {
+         breakevenSL = entryPrice - (MathMax(InpBreakevenBuffer, 10) * point);
+         LOG_DEBUG("⚠️ Breakeven SL adjusted below entry", g_debugPositionManager);
+      }
+   }
+   
+   // ═══ LOG IF SETBREAKEVEN MOVES SL ═══
+   double profitPips = 0;
+   if(isBuy)
+      profitPips = (currentPrice - entryPrice) / point;
+   else
+      profitPips = (entryPrice - currentPrice) / point;
+   
+   if(breakevenSL != currentSL)
+   {
+      LogSLMovement(ticket, "SET_BREAKEVEN_FUNCTION", currentSL, breakevenSL, profitPips, 
+                    "Breakeven with buffer: " + IntegerToString(InpBreakevenBuffer) + " pips");
+   }
+   
+   LOG_DEBUG("🔴 SetBreakeven: entry=" + DoubleToString(entryPrice, _Digits) + 
+             " | buffer=" + IntegerToString(InpBreakevenBuffer) + " pips" +
+             " | newSL=" + DoubleToString(breakevenSL, _Digits) + 
+             " | oldSL=" + DoubleToString(currentSL, _Digits), g_debugPositionManager);
+   
    ModifySLTP(ticket, breakevenSL, currentTP);
 }
 
 //+------------------------------------------------------------------+
-//| Apply Trailing Stop                                             |
+//| Apply Trailing Stop - ═══ THIS IS THE SUSPECT ═══             |
+//| This function applies trailing IMMEDIATELY with NO threshold   |
+//| ═══ CHECK WHERE THIS IS CALLED FROM! ═══                      |
 //+------------------------------------------------------------------+
 void CPositionManager::ApplyTrailingStop(ulong ticket, bool isBuy)
 {
-   LOG_DEBUG("ApplyTrailingStop called for #" + IntegerToString(ticket), g_debugPositionManager);
-   
-   if(!PositionSelectByTicket(ticket))
-   {
-      LOG_ERROR("Cannot select position #" + IntegerToString(ticket));
-      return;
-   }
+   if(!PositionSelectByTicket(ticket)) return;
    
    double currentPrice = isBuy ? SymbolInfoDouble(m_symbol, SYMBOL_BID)
                                 : SymbolInfoDouble(m_symbol, SYMBOL_ASK);
+   double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
    double point = SymbolInfoDouble(m_symbol, SYMBOL_POINT);
    double currentTP = PositionGetDouble(POSITION_TP);
    double currentSL = PositionGetDouble(POSITION_SL);
+   
+   double profitPips = isBuy ? (currentPrice - openPrice) / point 
+                             : (openPrice - currentPrice) / point;
+   
+   // ═══ CRITICAL: THIS FUNCTION HAS NO THRESHOLD CHECK! ═══
+   Print("🔴🔴🔴 ApplyTrailingStop() CALLED! 🔴🔴🔴");
+   Print("   Position #", ticket);
+   Print("   Current Price: ", DoubleToString(currentPrice, _Digits));
+   Print("   Current SL: ", DoubleToString(currentSL, _Digits));
+   Print("   Profit: ", DoubleToString(profitPips, 1), " pips");
+   Print("   ⚠️⚠️⚠️ NO THRESHOLD CHECK IN THIS FUNCTION! ⚠️⚠️⚠️");
+   Print("   CHECK WHAT CALLED THIS FUNCTION!");
    
    double trailDistance = InpTrailingStopPips * point;
    double newSL = isBuy ? currentPrice - trailDistance 
@@ -909,6 +745,12 @@ void CPositionManager::ApplyTrailingStop(ulong ticket, bool isBuy)
    
    if(shouldMove)
    {
+      Print("🔴🔴🔴 ApplyTrailingStop() IS MOVING SL! 🔴🔴🔴");
+      Print("   Old SL: ", DoubleToString(currentSL, _Digits));
+      Print("   New SL: ", DoubleToString(newSL, _Digits));
+      
+      LogSLMovement(ticket, "APPLY_TRAILING_STOP_FUNCTION", currentSL, newSL, profitPips, "Direct call to ApplyTrailingStop() - NO THRESHOLD CHECK!");
+      
       double newTP = currentTP;
       
       if(IsBoostActive())
@@ -925,8 +767,6 @@ void CPositionManager::ApplyTrailingStop(ulong ticket, bool isBuy)
 //+------------------------------------------------------------------+
 void CPositionManager::ModifySLTP(ulong ticket, double newSL, double newTP)
 {
-   LOG_DEBUG("ModifySLTP called for #" + IntegerToString(ticket) + " | SL: " + DoubleToString(newSL, _Digits) + " | TP: " + DoubleToString(newTP, _Digits), g_debugPositionManager);
-   
    MqlTradeRequest request = {};
    MqlTradeResult result = {};
    
@@ -938,12 +778,8 @@ void CPositionManager::ModifySLTP(ulong ticket, double newSL, double newTP)
    
    if(!m_trade.OrderSend(request, result))
    {
-      LOG_ERROR("Failed to modify position #" + IntegerToString(ticket) + 
-                ": " + IntegerToString(result.retcode));
-   }
-   else
-   {
-      LOG_DEBUG("Modify successful for #" + IntegerToString(ticket), g_debugPositionManager);
+      // Only log errors
+      Print("❌ Failed to modify position #", ticket, ": ", IntegerToString(result.retcode));
    }
 }
 
@@ -952,15 +788,7 @@ void CPositionManager::ModifySLTP(ulong ticket, double newSL, double newTP)
 //+------------------------------------------------------------------+
 void CPositionManager::ClosePosition(ulong ticket)
 {
-   LOG_DEBUG("ClosePosition called for #" + IntegerToString(ticket), g_debugPositionManager);
-   
-   if(!m_trade.PositionClose(ticket))
-   {
-      LOG_ERROR("Failed to close position #" + IntegerToString(ticket));
-      return;
-   }
-   
-   LOG_TRADE("✅ Position #" + IntegerToString(ticket) + " closed");
+   if(!m_trade.PositionClose(ticket)) return;
    RemoveState(ticket);
 }
 
@@ -969,8 +797,6 @@ void CPositionManager::ClosePosition(ulong ticket)
 //+------------------------------------------------------------------+
 void CPositionManager::CloseAllPositions()
 {
-   LOG_WARNING("🔴 Closing all positions...");
-   
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       ulong ticket = PositionGetTicket(i);
@@ -978,13 +804,10 @@ void CPositionManager::CloseAllPositions()
       
       if(IsOurPosition(ticket))
       {
-         LOG_DEBUG("Closing position #" + IntegerToString(ticket), g_debugPositionManager);
          m_trade.PositionClose(ticket);
       }
    }
-   
    ArrayResize(m_states, 0);
-   LOG_INFO("✅ All positions closed", g_debugPositionManager);
 }
 
 //+------------------------------------------------------------------+
@@ -992,11 +815,7 @@ void CPositionManager::CloseAllPositions()
 //+------------------------------------------------------------------+
 void CPositionManager::PrintStates()
 {
-   if(!g_debugPositionManager)
-   {
-      Print("[PositionManager] Debug logging disabled - use SetGlobalDebug(true)");
-      return;
-   }
+   if(!g_debugPositionManager) return;
    
    Print("=== Position States (", ArraySize(m_states), ") ===");
    for(int i = 0; i < ArraySize(m_states); i++)
@@ -1005,11 +824,7 @@ void CPositionManager::PrintStates()
             " | Signal: ", (m_states[i].signal == 1 ? "BUY" : "SELL"),
             " | Entry: ", m_states[i].entryPrice,
             " | BE: ", m_states[i].isBreakevenSet ? "✅" : "❌",
-            " | Partial: ", m_states[i].isPartialCloseDone ? "✅" : "❌",
-            " | Trail: ", m_states[i].isTrailingActive ? "✅" : "❌",
-            " | Boost TP: ", m_states[i].boostActive ? "✅" : "❌",
-            " | TP Dist: ", DoubleToString(m_states[i].boostTPDistance, 0),
-            " | Volume: ", DoubleToString(m_states[i].openVolume, 2));
+            " | Trail: ", m_states[i].isTrailingActive ? "✅" : "❌");
    }
    Print("==========================");
 }
@@ -1019,72 +834,36 @@ void CPositionManager::PrintStates()
 //+------------------------------------------------------------------+
 double CPositionManager::GetOpenPrice(ulong ticket)
 {
-   if(!PositionSelectByTicket(ticket)) 
-   {
-      LOG_DEBUG("GetOpenPrice: Cannot select #" + IntegerToString(ticket), g_debugPositionManager);
-      return 0;
-   }
-   double price = PositionGetDouble(POSITION_PRICE_OPEN);
-   LOG_DEBUG("GetOpenPrice #" + IntegerToString(ticket) + ": " + DoubleToString(price, _Digits), g_debugPositionManager);
-   return price;
+   if(!PositionSelectByTicket(ticket)) return 0;
+   return PositionGetDouble(POSITION_PRICE_OPEN);
 }
 
 double CPositionManager::GetCurrentSL(ulong ticket)
 {
-   if(!PositionSelectByTicket(ticket)) 
-   {
-      LOG_DEBUG("GetCurrentSL: Cannot select #" + IntegerToString(ticket), g_debugPositionManager);
-      return 0;
-   }
-   double sl = PositionGetDouble(POSITION_SL);
-   LOG_DEBUG("GetCurrentSL #" + IntegerToString(ticket) + ": " + DoubleToString(sl, _Digits), g_debugPositionManager);
-   return sl;
+   if(!PositionSelectByTicket(ticket)) return 0;
+   return PositionGetDouble(POSITION_SL);
 }
 
 double CPositionManager::GetCurrentTP(ulong ticket)
 {
-   if(!PositionSelectByTicket(ticket)) 
-   {
-      LOG_DEBUG("GetCurrentTP: Cannot select #" + IntegerToString(ticket), g_debugPositionManager);
-      return 0;
-   }
-   double tp = PositionGetDouble(POSITION_TP);
-   LOG_DEBUG("GetCurrentTP #" + IntegerToString(ticket) + ": " + DoubleToString(tp, _Digits), g_debugPositionManager);
-   return tp;
+   if(!PositionSelectByTicket(ticket)) return 0;
+   return PositionGetDouble(POSITION_TP);
 }
 
 ENUM_POSITION_TYPE CPositionManager::GetPositionType(ulong ticket)
 {
-   if(!PositionSelectByTicket(ticket)) 
-   {
-      LOG_DEBUG("GetPositionType: Cannot select #" + IntegerToString(ticket), g_debugPositionManager);
-      return POSITION_TYPE_BUY;
-   }
-   ENUM_POSITION_TYPE type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-   LOG_DEBUG("GetPositionType #" + IntegerToString(ticket) + ": " + (type == POSITION_TYPE_BUY ? "BUY" : "SELL"), g_debugPositionManager);
-   return type;
+   if(!PositionSelectByTicket(ticket)) return POSITION_TYPE_BUY;
+   return (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
 }
 
 double CPositionManager::GetPositionProfit(ulong ticket)
 {
-   if(!PositionSelectByTicket(ticket)) 
-   {
-      LOG_DEBUG("GetPositionProfit: Cannot select #" + IntegerToString(ticket), g_debugPositionManager);
-      return 0;
-   }
-   double profit = PositionGetDouble(POSITION_PROFIT);
-   LOG_DEBUG("GetPositionProfit #" + IntegerToString(ticket) + ": " + DoubleToString(profit, 2), g_debugPositionManager);
-   return profit;
+   if(!PositionSelectByTicket(ticket)) return 0;
+   return PositionGetDouble(POSITION_PROFIT);
 }
 
 double CPositionManager::GetPositionVolume(ulong ticket)
 {
-   if(!PositionSelectByTicket(ticket)) 
-   {
-      LOG_DEBUG("GetPositionVolume: Cannot select #" + IntegerToString(ticket), g_debugPositionManager);
-      return 0;
-   }
-   double volume = PositionGetDouble(POSITION_VOLUME);
-   LOG_DEBUG("GetPositionVolume #" + IntegerToString(ticket) + ": " + DoubleToString(volume, 2), g_debugPositionManager);
-   return volume;
+   if(!PositionSelectByTicket(ticket)) return 0;
+   return PositionGetDouble(POSITION_VOLUME);
 }

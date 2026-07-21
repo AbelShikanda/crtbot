@@ -2,7 +2,7 @@
 //|                     PortfolioManager.mqh                         |
 //|                    Portfolio Risk & Confidence Manager           |
 //|                    v3.6 - FIXED MACD LOSS MANAGEMENT            |
-//|                    MACD Opposition + Confidence ≥ 20% Check     |
+//|                    MACD Opposition + Confidence ≥ 5% Check      |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
 #property version "3.6"
@@ -64,7 +64,7 @@ private:
    // LOSS MANAGEMENT INPUTS (from main file)
    // ════════════════════════════════════════════════════════════
    bool              m_lossManagementEnabled;
-   double            m_lossCloseConfidence;   // Default 20.0%
+   double            m_lossCloseConfidence;   // Default 5.0%
    double            m_lossMACDThreshold;     // MACD value threshold
    
    // ============================================================
@@ -217,7 +217,7 @@ CPortfolioManager::CPortfolioManager(string symbol, int magicNumber, CTrade &tra
    m_boostCacheTimeout = 2;
    
    m_lossManagementEnabled = true;
-   m_lossCloseConfidence = 20.0;     // ← THRESHOLD SET TO 20%
+   m_lossCloseConfidence = 5.0;     // ← THRESHOLD SET TO 5%
    m_lossMACDThreshold = 0.0;
    
    m_portfolioConfidenceBoost = 0;
@@ -851,7 +851,7 @@ bool CPortfolioManager::ShouldClosePosition(ulong ticket, PositionMonitor &monit
    
    // ============================================================
    // DECISION: Uses CONFIDENCE from CheckMACDOpposition()
-   // Threshold is 20% (m_lossCloseConfidence = 20.0)
+   // Threshold is 5% (m_lossCloseConfidence = 5.0)
    // ============================================================
    if(macdOpposes && oppositionConfidence >= m_lossCloseConfidence)
    {
