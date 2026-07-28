@@ -1,17 +1,14 @@
 //+------------------------------------------------------------------+
 //|                         RangeManager.mqh                         |
 //|                    Dynamic Range Bar Manager                     |
-//|                    v1.12 - WITH RANGE COMPARISON               |
-//|                    Uses direct iADX for ADX                    |
-//|                    Uses IndicatorManager for ATR               |
-//|                    SELF-LOGGING - CONTROLLED BY TOGGLE        |
+//|                    v1.13 - SESSIONS ONLY                        |
+//|                    Session detection and management             |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
-#property version "1.12"
+#property version "1.13"
 
 #include "../Headers/Inputs.mqh"
 #include "../Utils/Logger.mqh"
-#include "../PackageManagers/IndicatorManager.mqh"
 
 //+------------------------------------------------------------------+
 //| 📊 LOG TOGGLES - Master control for all RangeManager logs      |
@@ -38,45 +35,18 @@ struct SessionInfo
 };
 
 //+------------------------------------------------------------------+
-//| Range Manager Class                                             |
+//| Range Manager Class - SESSIONS ONLY                             |
 //+------------------------------------------------------------------+
-class CRangeManager
+class CSessionManager
 {
 private:
    string   m_symbol;
    ENUM_TIMEFRAMES m_timeframe;
    bool     m_debugEnabled;
    
-   // ═══ REFERENCES TO EXTERNAL MANAGERS ═══
-   CIndicatorManager*   m_indicatorManager;   // For ATR values only
-   
-   // Dynamic range settings
-   int      m_minBars;
-   int      m_maxBars;
-   int      m_currentBars;
-   bool     m_useDynamicBars;
-   
-   // Cached values for efficiency
-   double   m_cachedATR;
-   double   m_cachedADX;
-   datetime m_lastCalculationTime;
-   int      m_lastCalculatedBars;
-   
-   // ═══ SELF-LOGGING CONTROL ═══
-   datetime m_lastLogTime;
-   bool     m_initialized;
-   
    // ═══ SESSION TRACKING ═══
    SessionInfo m_currentSessionInfo;
    datetime    m_lastSessionUpdate;
-   
-   // Private methods
-   double   GetATRValue();
-   double   GetADXValueInternal();  // ═══ RENAMED ═══
-   double   GetATRPercentileInternal(int lookback = 100);  // ═══ RENAMED ═══
-   int      CalculateBars();
-   void     UpdateCache();
-   void     LogStatus();
    
    // ═══ SESSION METHODS ═══
    void     UpdateSessionInfo();
@@ -85,32 +55,14 @@ private:
    void     CalculateSessionHighLow();
    
 public:
-   CRangeManager(string symbol = NULL, ENUM_TIMEFRAMES tf = PERIOD_M1);
-   ~CRangeManager();
-   
-   // ═══ SET MANAGERS ═══
-   void     SetIndicatorManager(CIndicatorManager* manager) { m_indicatorManager = manager; }
+   CSessionManager(string symbol = NULL, ENUM_TIMEFRAMES tf = PERIOD_M1);
+   ~CSessionManager();
    
    // Main methods
    bool     Initialize();
-   int      GetRangeBars();
-   int      GetCurrentBars() const { return m_currentBars; }
-   void     ForceRecalculation() { m_lastCalculationTime = 0; }
    
    // Configuration
-   void     SetMinBars(int min) { m_minBars = MathMax(5, min); }
-   void     SetMaxBars(int max) { m_maxBars = MathMax(m_minBars, max); }
-   void     SetDynamicMode(bool enable) { m_useDynamicBars = enable; }
    void     EnableDebug(bool enable) { m_debugEnabled = enable; }
-   
-   // ═══ GETTERS FOR RANGE COMPARISON ═══
-   int      GetMinBars() const { return m_minBars; }
-   int      GetMaxBars() const { return m_maxBars; }
-   bool     IsDynamicMode() const { return m_useDynamicBars; }
-   double   GetADXValue() { return GetADXValueInternal(); }  // ═══ PUBLIC WRAPPER ═══
-   double   GetATRPercentile(int lookback = 100) { return GetATRPercentileInternal(lookback); }  // ═══ PUBLIC WRAPPER ═══
-   datetime GetLastCalculationTime() const { return m_lastCalculationTime; }
-   int      GetLastCalculatedBars() const { return m_lastCalculatedBars; }
    
    // ═══ SESSION GETTERS (FOR CHART MODULE) ═══
    int      GetCurrentSessionId();
@@ -125,166 +77,49 @@ public:
    double   GetSessionLow();
    bool     IsSessionValid();
    SessionInfo GetSessionInfo();
-   
-   // ═══ STATUS METHODS ═══
-   string   GetStatusString();
-   string   GetDetailedReport();
-   string   GetStatusLogString();
+
+   // ═══ SESSION GETTERS WITH ID ═══
+   datetime GetSessionStartTimeForId(int sessionId);
+   datetime GetSessionEndTimeForId(int sessionId);
 };
 
 //+------------------------------------------------------------------+
 //| Constructor                                                     |
 //+------------------------------------------------------------------+
-CRangeManager::CRangeManager(string symbol, ENUM_TIMEFRAMES tf)
+CSessionManager::CSessionManager(string symbol, ENUM_TIMEFRAMES tf)
 {
-   // SILENT - No constructor logging
-   
    m_symbol = (symbol == NULL) ? _Symbol : symbol;
    m_timeframe = tf;
    m_debugEnabled = g_enableRangeManagerDebug;
-   m_initialized = false;
-   m_lastLogTime = 0;
-   m_lastSessionUpdate = 0;
-   
-   // ═══ MANAGER REFERENCES ═══
-   m_indicatorManager = NULL;
-   
-   // Default settings from inputs
-   m_minBars = InpMinRangeBars;        // 10
-   m_maxBars = InpMaxRangeBars;        // 50
-   m_currentBars = 20;                 // Default
-   m_useDynamicBars = InpUseDynamicRangeBars;
-   
-   // Cache
-   m_cachedATR = 0;
-   m_cachedADX = 0;
-   m_lastCalculationTime = 0;
-   m_lastCalculatedBars = 20;
    
    // ═══ Session info initialization ═══
    ZeroMemory(m_currentSessionInfo);
    m_currentSessionInfo.isValid = false;
+   m_lastSessionUpdate = 0;
 }
 
 //+------------------------------------------------------------------+
 //| Destructor                                                      |
 //+------------------------------------------------------------------+
-CRangeManager::~CRangeManager()
+CSessionManager::~CSessionManager()
 {
-   // SILENT - No destructor logging
+   // SILENT
 }
 
 //+------------------------------------------------------------------+
 //| Initialize                                                      |
 //+------------------------------------------------------------------+
-bool CRangeManager::Initialize()
+bool CSessionManager::Initialize()
 {
-   if(m_indicatorManager == NULL)
-   {
-      // Only log warning if debug enabled
-      if(g_enableRangeManagerDebug)
-         LOG_WARNING("⚠️ IndicatorManager not set - ATR will use fallback values");
-   }
-   
-   m_initialized = true;
    UpdateSessionInfo();  // Initialize session data
-   
    return true;
-}
-
-//+------------------------------------------------------------------+
-//| Get ATR Value - FROM INDICATORMANAGER                          |
-//+------------------------------------------------------------------+
-double CRangeManager::GetATRValue()
-{
-   if(m_indicatorManager != NULL)
-   {
-      double atr = m_indicatorManager.GetATRWithFallback(PERIOD_M1);
-      if(atr > 0)
-      {
-         if(g_enableRangeManagerDebug)
-            LOG_DEBUG("📊 ATR from IndicatorManager: " + DoubleToString(atr, 5), m_debugEnabled);
-         return atr;
-      }
-   }
-   
-   int atrHandle = iATR(m_symbol, PERIOD_M1, 14);
-   if(atrHandle != INVALID_HANDLE)
-   {
-      double atrBuffer[];
-      ArraySetAsSeries(atrBuffer, true);
-      if(CopyBuffer(atrHandle, 0, 0, 1, atrBuffer) > 0)
-      {
-         if(atrBuffer[0] > 0)
-         {
-            if(g_enableRangeManagerDebug)
-               LOG_DEBUG("📊 ATR from direct calculation: " + DoubleToString(atrBuffer[0], 5), m_debugEnabled);
-            return atrBuffer[0];
-         }
-      }
-   }
-   
-   // Fallback - no logging by default
-   return 0.0005;
-}
-
-//+------------------------------------------------------------------+
-//| Get ADX Value - DIRECT iADX (Internal)                         |
-//+------------------------------------------------------------------+
-double CRangeManager::GetADXValueInternal()
-{
-   int adxHandle = iADX(m_symbol, PERIOD_M15, 14);
-   if(adxHandle != INVALID_HANDLE)
-   {
-      double adxBuffer[];
-      ArraySetAsSeries(adxBuffer, true);
-      if(CopyBuffer(adxHandle, 0, 0, 1, adxBuffer) > 0)
-      {
-         if(adxBuffer[0] > 0)
-         {
-            if(g_enableRangeManagerDebug)
-               LOG_DEBUG("📊 ADX from direct calculation: " + DoubleToString(adxBuffer[0], 1), m_debugEnabled);
-            return adxBuffer[0];
-         }
-      }
-   }
-   
-   // Fallback - no logging by default
-   return 25.0;
-}
-
-//+------------------------------------------------------------------+
-//| Get ATR Percentile - Internal                                   |
-//+------------------------------------------------------------------+
-double CRangeManager::GetATRPercentileInternal(int lookback = 100)
-{
-   double atr = GetATRValue();
-   if(atr <= 0) return 50.0;
-   
-   int atrHandle = iATR(m_symbol, PERIOD_M1, 14);
-   if(atrHandle == INVALID_HANDLE) return 50.0;
-   
-   double atrBuffer[];
-   ArraySetAsSeries(atrBuffer, true);
-   
-   if(CopyBuffer(atrHandle, 0, 0, lookback, atrBuffer) < lookback)
-      return 50.0;
-   
-   int count = 0;
-   for(int i = 1; i < lookback; i++)
-   {
-      if(atrBuffer[i] < atr && atrBuffer[i] > 0)
-         count++;
-   }
-   
-   return (double)count / lookback * 100.0;
 }
 
 //+------------------------------------------------------------------+
 //| Get Current Session ID - NO SEPARATE OVERLAP                   |
 //| Returns: 0=Off-Hours, 1=London, 2=NY, 3=Asia                   |
 //+------------------------------------------------------------------+
-int CRangeManager::GetCurrentSessionId()
+int CSessionManager::GetCurrentSessionId()
 {
    datetime now = TimeCurrent();
    MqlDateTime dt;
@@ -325,7 +160,7 @@ int CRangeManager::GetCurrentSessionId()
 //+------------------------------------------------------------------+
 //| Get Session Name                                                |
 //+------------------------------------------------------------------+
-string CRangeManager::GetSessionName()
+string CSessionManager::GetSessionName()
 {
    int session = GetCurrentSessionId();
    switch(session)
@@ -341,7 +176,7 @@ string CRangeManager::GetSessionName()
 //+------------------------------------------------------------------+
 //| Get Session Short Name                                          |
 //+------------------------------------------------------------------+
-string CRangeManager::GetSessionShortName()
+string CSessionManager::GetSessionShortName()
 {
    int session = GetCurrentSessionId();
    switch(session)
@@ -357,7 +192,7 @@ string CRangeManager::GetSessionShortName()
 //+------------------------------------------------------------------+
 //| Get Session Hours - NATURAL OVERLAP (No separate Overlap)      |
 //+------------------------------------------------------------------+
-string CRangeManager::GetSessionHours()
+string CSessionManager::GetSessionHours()
 {
    int session = GetCurrentSessionId();
    switch(session)
@@ -373,7 +208,7 @@ string CRangeManager::GetSessionHours()
 //+------------------------------------------------------------------+
 //| Get Session Adjustment                                          |
 //+------------------------------------------------------------------+
-int CRangeManager::GetSessionAdjustment()
+int CSessionManager::GetSessionAdjustment()
 {
    int session = GetCurrentSessionId();
    switch(session)
@@ -389,7 +224,7 @@ int CRangeManager::GetSessionAdjustment()
 //+------------------------------------------------------------------+
 //| Get Session Color                                               |
 //+------------------------------------------------------------------+
-color CRangeManager::GetSessionColor()
+color CSessionManager::GetSessionColor()
 {
    int session = GetCurrentSessionId();
    switch(session)
@@ -405,13 +240,13 @@ color CRangeManager::GetSessionColor()
 //+------------------------------------------------------------------+
 //| Get Session Start Time - NATURAL OVERLAP                       |
 //+------------------------------------------------------------------+
-datetime CRangeManager::GetSessionStartTime()
+datetime CSessionManager::GetSessionStartTime()
 {
    datetime now = TimeCurrent();
    return GetSessionStartTime(now, GetCurrentSessionId());
 }
 
-datetime CRangeManager::GetSessionStartTime(datetime time, int sessionId)
+datetime CSessionManager::GetSessionStartTime(datetime time, int sessionId)
 {
    MqlDateTime dt;
    TimeToStruct(time, dt);
@@ -431,13 +266,13 @@ datetime CRangeManager::GetSessionStartTime(datetime time, int sessionId)
 //+------------------------------------------------------------------+
 //| Get Session End Time - NATURAL OVERLAP                         |
 //+------------------------------------------------------------------+
-datetime CRangeManager::GetSessionEndTime()
+datetime CSessionManager::GetSessionEndTime()
 {
    datetime now = TimeCurrent();
    return GetSessionEndTime(now, GetCurrentSessionId());
 }
 
-datetime CRangeManager::GetSessionEndTime(datetime time, int sessionId)
+datetime CSessionManager::GetSessionEndTime(datetime time, int sessionId)
 {
    MqlDateTime dt;
    TimeToStruct(time, dt);
@@ -457,7 +292,7 @@ datetime CRangeManager::GetSessionEndTime(datetime time, int sessionId)
 //+------------------------------------------------------------------+
 //| Calculate Session High/Low                                      |
 //+------------------------------------------------------------------+
-void CRangeManager::CalculateSessionHighLow()
+void CSessionManager::CalculateSessionHighLow()
 {
    datetime startTime = GetSessionStartTime();
    datetime endTime = GetSessionEndTime();
@@ -494,7 +329,7 @@ void CRangeManager::CalculateSessionHighLow()
 //+------------------------------------------------------------------+
 //| Update Session Info                                             |
 //+------------------------------------------------------------------+
-void CRangeManager::UpdateSessionInfo()
+void CSessionManager::UpdateSessionInfo()
 {
    datetime now = TimeCurrent();
    int sessionId = GetCurrentSessionId();
@@ -526,7 +361,7 @@ void CRangeManager::UpdateSessionInfo()
 //+------------------------------------------------------------------+
 //| Get Session High                                                |
 //+------------------------------------------------------------------+
-double CRangeManager::GetSessionHigh()
+double CSessionManager::GetSessionHigh()
 {
    UpdateSessionInfo();
    return m_currentSessionInfo.high;
@@ -535,7 +370,7 @@ double CRangeManager::GetSessionHigh()
 //+------------------------------------------------------------------+
 //| Get Session Low                                                 |
 //+------------------------------------------------------------------+
-double CRangeManager::GetSessionLow()
+double CSessionManager::GetSessionLow()
 {
    UpdateSessionInfo();
    return m_currentSessionInfo.low;
@@ -544,7 +379,7 @@ double CRangeManager::GetSessionLow()
 //+------------------------------------------------------------------+
 //| Is Session Valid                                                |
 //+------------------------------------------------------------------+
-bool CRangeManager::IsSessionValid()
+bool CSessionManager::IsSessionValid()
 {
    UpdateSessionInfo();
    return m_currentSessionInfo.isValid;
@@ -553,191 +388,26 @@ bool CRangeManager::IsSessionValid()
 //+------------------------------------------------------------------+
 //| Get Session Info                                                |
 //+------------------------------------------------------------------+
-SessionInfo CRangeManager::GetSessionInfo()
+SessionInfo CSessionManager::GetSessionInfo()
 {
    UpdateSessionInfo();
    return m_currentSessionInfo;
 }
 
 //+------------------------------------------------------------------+
-//| Log Status - ONLY LOGS WHEN ENABLED                             |
+//| Get Session Start Time For ID - Public wrapper                  |
 //+------------------------------------------------------------------+
-void CRangeManager::LogStatus()
+datetime CSessionManager::GetSessionStartTimeForId(int sessionId)
 {
-   if(!m_initialized) return;
-   if(!g_enableRangeManagerStatus) return;  // ═══ TOGGLE CHECK ═══
-   
-   if(m_lastLogTime == 0) m_lastLogTime = TimeCurrent();
-   
    datetime now = TimeCurrent();
-   if(now - m_lastLogTime < 5) return;
-   m_lastLogTime = now;
-   
-   int session = GetCurrentSessionId();
-   double adx = GetADXValue();
-   double atrPct = GetATRPercentile(100);
-   int bars = m_currentBars;
-   
-   string sessionNames[] = {"Off-Hours", "London", "NY", "Asia"};
-   string sessionName = (session >= 0 && session < 4) ? sessionNames[session] : "Unknown";
-   string mode = m_useDynamicBars ? "DYNAMIC" : "FIXED";
-   
-   if(g_enableRangeManagerLogs)
-   {
-      LOG(StringFormat(
-         "📊 RANGE: %d bars | Mode: %s | Session: %s | ADX: %.0f | ATR: %.0f%% | Min: %d | Max: %d",
-         bars, mode, sessionName, adx, atrPct, m_minBars, m_maxBars
-      ), true);
-   }
+   return GetSessionStartTime(now, sessionId);
 }
 
 //+------------------------------------------------------------------+
-//| Get Range Bars                                                  |
+//| Get Session End Time For ID - Public wrapper                    |
 //+------------------------------------------------------------------+
-int CRangeManager::GetRangeBars()
+datetime CSessionManager::GetSessionEndTimeForId(int sessionId)
 {
-   if(!m_useDynamicBars)
-   {
-      m_currentBars = m_minBars;
-      LogStatus();  // Only logs if enabled
-      return m_currentBars;
-   }
-   
    datetime now = TimeCurrent();
-   if(now - m_lastCalculationTime > 5)
-   {
-      int newBars = CalculateBars();
-      if(newBars != m_lastCalculatedBars)
-      {
-         m_lastCalculatedBars = newBars;
-         m_currentBars = newBars;
-         if(g_enableRangeManagerDebug)
-            LOG_DEBUG("📊 Range bars updated: " + IntegerToString(m_currentBars), m_debugEnabled);
-      }
-      m_lastCalculationTime = now;
-   }
-   
-   LogStatus();  // Only logs if enabled
-   return m_currentBars;
-}
-
-//+------------------------------------------------------------------+
-//| Calculate Dynamic Bars                                          |
-//+------------------------------------------------------------------+
-int CRangeManager::CalculateBars()
-{
-   double base = 20.0;
-   
-   double atrPercentile = GetATRPercentile(100);
-   
-   if(atrPercentile > 80)       base = 35.0;
-   else if(atrPercentile > 60)  base = 28.0;
-   else if(atrPercentile > 40)  base = 20.0;
-   else if(atrPercentile > 20)  base = 15.0;
-   else                         base = 12.0;
-   
-   double adx = GetADXValue();
-   
-   if(adx > 40)                 base *= 0.6;
-   else if(adx > 30)            base *= 0.8;
-   else if(adx > 20)            base *= 1.0;
-   else if(adx > 15)            base *= 1.3;
-   else                         base *= 1.6;
-   
-   int session = GetCurrentSessionId();
-   
-   if(session == 1)         base += 3.0;   // London
-   else if(session == 2)    base += 5.0;   // NY
-   else if(session == 3)    base -= 3.0;   // Asia
-   else                     base -= 5.0;   // Off-Hours
-   
-   int bars = (int)MathRound(base);
-   bars = MathMax(m_minBars, MathMin(m_maxBars, bars));
-   
-   if(g_enableRangeManagerDebug)
-   {
-      string sessionNames[] = {"Off-Hours", "London", "NY", "Asia"};
-      string sessionName = (session >= 0 && session < 4) ? sessionNames[session] : "Unknown";
-      
-      LOG_DEBUG(StringFormat("📊 Dynamic Bars: %d | ATR: %.0f%% | ADX: %.0f | Session: %s", 
-                            bars, atrPercentile, adx, sessionName), true);
-   }
-   
-   return bars;
-}
-
-//+------------------------------------------------------------------+
-//| Get Status String                                               |
-//+------------------------------------------------------------------+
-string CRangeManager::GetStatusString()
-{
-   if(!m_useDynamicBars)
-      return "Range: FIXED (" + IntegerToString(m_currentBars) + " bars)";
-   
-   string sessionNames[] = {"Off-Hours", "London", "NY", "Asia"};
-   int session = GetCurrentSessionId();
-   string sessionName = (session >= 0 && session < 4) ? sessionNames[session] : "Unknown";
-   
-   double adx = GetADXValue();
-   double atrPct = GetATRPercentile(100);
-   
-   return StringFormat("Range: %d bars | %s | ATR: %.0f%% | ADX: %.0f", 
-                       m_currentBars, sessionName, atrPct, adx);
-}
-
-//+------------------------------------------------------------------+
-//| Get Status Log String                                           |
-//+------------------------------------------------------------------+
-string CRangeManager::GetStatusLogString()
-{
-   int session = GetCurrentSessionId();
-   double adx = GetADXValue();
-   double atrPct = GetATRPercentile(100);
-   int bars = m_currentBars;
-   
-   string sessionNames[] = {"Off-Hours", "London", "NY", "Asia"};
-   string sessionName = (session >= 0 && session < 4) ? sessionNames[session] : "Unknown";
-   string mode = m_useDynamicBars ? "DYNAMIC" : "FIXED";
-   
-   return StringFormat(
-      "📊 RANGE: %d bars | Mode: %s | Session: %s | ADX: %.0f | ATR: %.0f%% | Min: %d | Max: %d",
-      bars, mode, sessionName, adx, atrPct, m_minBars, m_maxBars
-   );
-}
-
-//+------------------------------------------------------------------+
-//| Get Detailed Report                                             |
-//+------------------------------------------------------------------+
-string CRangeManager::GetDetailedReport()
-{
-   double adx = GetADXValue();
-   double atr = GetATRValue();
-   double atrPct = GetATRPercentile(100);
-   int session = GetCurrentSessionId();
-   string sessionNames[] = {"Off-Hours", "London", "NY", "Asia"};
-   string sessionName = (session >= 0 && session < 4) ? sessionNames[session] : "Unknown";
-   
-   string report = "\n═══════════════════════════════════════════════════\n";
-   report += "RANGE MANAGER REPORT\n";
-   report += "═══════════════════════════════════════════════════\n";
-   report += "  Dynamic Mode: " + string(m_useDynamicBars ? "ENABLED" : "DISABLED") + "\n";
-   report += "  Current Bars: " + IntegerToString(m_currentBars) + "\n";
-   report += "  Min Bars: " + IntegerToString(m_minBars) + "\n";
-   report += "  Max Bars: " + IntegerToString(m_maxBars) + "\n";
-   report += "  ADX (direct iADX): " + DoubleToString(adx, 1) + "\n";
-   report += "  ATR (from IndicatorManager): " + DoubleToString(atr, 5) + "\n";
-   report += "  ATR Percentile: " + DoubleToString(atrPct, 1) + "%\n";
-   report += "  Session: " + sessionName + "\n";
-   report += "  Session Hours: ";
-   switch(session)
-   {
-      case 0: report += "Off-Hours (23:00-03:00 UTC)"; break;
-      case 1: report += "London (10:30-18:30 UTC)"; break;
-      case 2: report += "NY (16:30-23:00 UTC)"; break;
-      case 3: report += "Asia (03:00-09:00 UTC)"; break;
-      default: report += "Unknown"; break;
-   }
-   report += "\n═══════════════════════════════════════════════════\n";
-   
-   return report;
+   return GetSessionEndTime(now, sessionId);
 }

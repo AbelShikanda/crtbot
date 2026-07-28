@@ -10,10 +10,10 @@
 //|                    + FIXED SL (NO BUFFER) + DEBUG               |
 //|                    + TREND MANAGER VERIFICATION                 |
 //|                    + BRACKET-BASED LOT SIZING                   |
-//|                    + v3.44: REMOVED ALL LOSS CLOSE CONFIG      |
+//|                    + v3.45: SESSION MANAGER INTEGRATED         |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
-#property version "3.44"
+#property version "3.45"
 #property strict
 
 // ============================================================
@@ -48,6 +48,7 @@
 #include "include/Core/Dashboard.mqh"
 #include "include/Core/ChartModule.mqh"
 #include "include/PackageManagers/ComponentManager.mqh"
+#include "include/PackageManagers/SessionManager.mqh"
 
 // ============================================================
 // GLOBAL DEBUG TOGGLES - SET TO FALSE BY DEFAULT
@@ -60,6 +61,7 @@ bool g_debugPosition = false;
 bool g_debugRisk = false;
 bool g_debugComponent = false;
 bool g_debugPullback = false;
+bool g_debugSession = false;
 
 // ============================================================
 // INPUT PARAMETERS - LOSS MANAGEMENT (REMOVED)
@@ -77,6 +79,7 @@ CRiskManager      *g_riskManager = NULL;
 CPortfolioManager *g_portfolioManager = NULL;
 CComponentManager *g_componentManager = NULL;
 CTrendManager     *g_trendManager = NULL;
+CSessionManager   *g_sessionManager = NULL;
 CTrade             g_trade;
 int                g_magicNumber;
 datetime           g_lastBarTime = 0;
@@ -105,6 +108,7 @@ enum EInitStatus
    INIT_STATUS_TREND_MANAGER,
    INIT_STATUS_COMPONENT_MANAGER,
    INIT_STATUS_PULLBACK,
+   INIT_STATUS_SESSION_MANAGER,
    INIT_STATUS_COMPLETE
 };
 
@@ -120,7 +124,7 @@ int OnInit()
 {
    Logger::Initialize();
    
-   LOG_INFO("=== PULLBACK EA v3.44 (REMOVED ALL LOSS CLOSE CONFIG) ===", g_debugMain);
+   LOG_INFO("=== PULLBACK EA v3.45 (SESSION MANAGER INTEGRATED) ===", g_debugMain);
    LOG_INFO("   Boost TP Distance: 100 points (when boost active)", g_debugMain);
    LOG_INFO("   TP never moves backward", g_debugMain);
    LOG_INFO("   DEBUG: " + (g_debugMode ? "ON" : "OFF (minimal)"), g_debugMain);
@@ -235,7 +239,19 @@ int OnInit()
    }
    
    // ============================================================
-   // 7. CREATE SCENARIO NARRATIVE
+   // 7. CREATE SESSION MANAGER
+   // ============================================================
+   g_sessionManager = new CSessionManager(_Symbol, InpEntryTF);
+   if(g_sessionManager == NULL)
+   {
+      LOG_ERROR("❌ Failed to create SessionManager");
+      return INIT_FAILED;
+   }
+   g_sessionManager.EnableDebug(g_debugSession);
+   LOG_DEBUG("✅ SessionManager created", g_debugSession);
+   
+   // ============================================================
+   // 8. CREATE SCENARIO NARRATIVE
    // ============================================================
    g_scenarioNarrative = new ScenarioNarrative();
    if(g_scenarioNarrative == NULL)
@@ -245,7 +261,7 @@ int OnInit()
    }
    
    // ============================================================
-   // 8. CREATE CHART MODULE
+   // 9. CREATE CHART MODULE
    // ============================================================
    if(InpShowChart)
    {
@@ -253,11 +269,14 @@ int OnInit()
       if(g_chartModule != NULL)
       {
          g_chartModule.SetPullbackModule(g_pullback);
+         // ═══ WIRE SESSION MANAGER TO CHART MODULE ═══
+         g_chartModule.SetSessionManager(g_sessionManager);
+         LOG_DEBUG("✅ ChartModule → SessionManager connected", g_debugMain);
       }
    }
    
    // ============================================================
-   // 9. CREATE DASHBOARD
+   // 10. CREATE DASHBOARD
    // ============================================================
    if(InpShowDashboard)
    {
@@ -269,6 +288,7 @@ int OnInit()
          g_dashboard.SetTrendManager(g_trendManager);
          g_dashboard.SetComponentManager(g_componentManager);
          g_dashboard.SetMinConfidenceThreshold(InpNeutralThreshold);
+         // g_dashboard.SetSessionManager(g_sessionManager);  // TODO: Add when dashboard supports sessions
       }
    }
    
@@ -279,10 +299,12 @@ int OnInit()
    g_lastInitAttempt = 0;
    g_initializationFailed = false;
    
-   LOG_INFO("✅ EA INITIALIZED - v3.44 (All Loss Close Config Removed)", g_debugMain);
+   LOG_INFO("✅ EA INITIALIZED - v3.45 (Session Manager Integrated)", g_debugMain);
    LOG_INFO("   TrendManager → PortfolioManager: ✓", g_debugMain);
    LOG_INFO("   PortfolioManager → PositionManager: ✓ (Boost TP 100 pts)", g_debugMain);
    LOG_INFO("   PullbackModule → TrendManager: ✓", g_debugMain);
+   LOG_INFO("   SessionManager: ✓ (Active Session Tracking)", g_debugMain);
+   LOG_INFO("   ChartModule → SessionManager: ✓ (Session Overlays)", g_debugMain);
    LOG_INFO("   Position management every 1 second", g_debugMain);
    LOG_INFO("=========================================================", g_debugMain);
    
@@ -395,7 +417,23 @@ bool InitializeIndicatorsAsync()
       g_initStatus = INIT_STATUS_PULLBACK;
    }
    
-   if(g_initStatus == INIT_STATUS_PULLBACK)
+   if(g_initStatus < INIT_STATUS_SESSION_MANAGER)
+   {
+      if(!WaitForData(InpEntryTF, 50))
+         return false;
+      
+      if(!g_sessionManager.Initialize())
+      {
+         if(g_initAttempts >= 10)
+            g_initializationFailed = true;
+         return false;
+      }
+      
+      LOG_DEBUG("✅ SessionManager initialized", g_debugSession);
+      g_initStatus = INIT_STATUS_SESSION_MANAGER;
+   }
+   
+   if(g_initStatus == INIT_STATUS_SESSION_MANAGER)
    {
       if(g_pullback != NULL && g_trendManager != NULL)
       {
@@ -404,6 +442,14 @@ bool InitializeIndicatorsAsync()
          {
             g_initStatus = INIT_STATUS_COMPLETE;
             LOG_INFO("✅ ALL MODULES INITIALIZED - READY", g_debugMain);
+            
+            // Log current session info
+            if(g_sessionManager != NULL && g_debugSession)
+            {
+               LOG_DEBUG("📊 Current Session: " + g_sessionManager.GetSessionName() + 
+                         " (" + g_sessionManager.GetSessionHours() + ")", g_debugSession);
+            }
+            
             return true;
          }
          else
@@ -459,6 +505,24 @@ void OnTimer()
       // g_portfolioManager.MonitorPositions(); // REMOVED - no loss management
    }
    
+   // Update SessionManager periodically
+   if(g_sessionManager != NULL)
+   {
+      // SessionManager auto-updates internally
+      if(g_debugSession)
+      {
+         static datetime lastSessionLog = 0;
+         if(TimeCurrent() - lastSessionLog >= 300)  // Log every 5 minutes
+         {
+            lastSessionLog = TimeCurrent();
+            LOG_DEBUG("📊 Session: " + g_sessionManager.GetSessionName() + 
+                      " | High: " + DoubleToString(g_sessionManager.GetSessionHigh(), _Digits) +
+                      " | Low: " + DoubleToString(g_sessionManager.GetSessionLow(), _Digits),
+                      g_debugSession);
+         }
+      }
+   }
+   
    static datetime lastReconnectCheck = 0;
    datetime currentTime = TimeCurrent();
 
@@ -502,6 +566,7 @@ void OnDeinit(const int reason)
       g_positionManager.CloseAllPositions();
    }
    
+   if(g_sessionManager != NULL) { delete g_sessionManager; g_sessionManager = NULL; }
    if(g_portfolioManager != NULL) { delete g_portfolioManager; g_portfolioManager = NULL; }
    if(g_pullback != NULL) { delete g_pullback; g_pullback = NULL; }
    if(g_positionManager != NULL) { delete g_positionManager; g_positionManager = NULL; }
@@ -824,6 +889,14 @@ void CheckSignal()
              DoubleToString(pullbackPercent, 1) + "%)");
    LOG_TRADE("   Boost: " + StringFormat("%+.1f%%", portfolioBoost));
    LOG_TRADE("   Confidence: " + DoubleToString(finalConfidence, 1) + "%");
+   
+   // Log current session if available
+   if(g_sessionManager != NULL)
+   {
+      LOG_TRADE("   Session: " + g_sessionManager.GetSessionName() + 
+                " (" + g_sessionManager.GetSessionHours() + ")");
+   }
+   
    LOG_TRADE("═══════════════════════════════════════════════════════════");
    
    if(trade.signal == 1)
@@ -1116,6 +1189,13 @@ void ShowPullbackInfo()
    LOG_INFO("Zone: " + pbResult.zoneCategory, g_debugMain);
    LOG_INFO("Confidence: " + DoubleToString(pbResult.confidence, 1) + "%", g_debugMain);
    LOG_INFO("Trend: " + (trend == 1 ? "BULLISH" : trend == -1 ? "BEARISH" : "NEUTRAL"), g_debugMain);
+   
+   if(g_sessionManager != NULL)
+   {
+      LOG_INFO("Session: " + g_sessionManager.GetSessionName() + 
+               " (" + g_sessionManager.GetSessionHours() + ")", g_debugMain);
+   }
+   
    LOG_INFO("", g_debugMain);
    LOG_INFO("=== COMPONENT MANAGER ===", g_debugMain);
    LOG_INFO("Sentiment: " + analysis.overallSentiment, g_debugMain);
@@ -1185,6 +1265,13 @@ void ShowScenario()
    LOG_INFO("   Direction: " + synthesized.direction + " | Confidence: " + 
        DoubleToString(synthesized.confidence, 1) + "%", g_debugMain);
    LOG_INFO("   Action: " + synthesized.action + " | Risk: " + synthesized.riskLevel, g_debugMain);
+   
+   if(g_sessionManager != NULL)
+   {
+      LOG_INFO("   Session: " + g_sessionManager.GetSessionName() + 
+               " (" + g_sessionManager.GetSessionHours() + ")", g_debugMain);
+   }
+   
    LOG_INFO("", g_debugMain);
    LOG_INFO("📋 " + synthesized.narrative, g_debugMain);
    LOG_INFO("=========================", g_debugMain);
@@ -1216,6 +1303,60 @@ void ClearAllDrawings()
    ObjectsDeleteAll(0, dashPrefix);
    
    LOG_INFO("✅ All drawings cleared", g_debugMain);
+}
+
+// ============================================================
+// SESSION MANAGER HELPER FUNCTIONS
+// ============================================================
+
+string GetSessionInfo()
+{
+   if(g_sessionManager == NULL) return "SessionManager not initialized";
+   return g_sessionManager.GetSessionName() + " (" + g_sessionManager.GetSessionHours() + ")";
+}
+
+int GetCurrentSessionId()
+{
+   if(g_sessionManager == NULL) return -1;
+   return g_sessionManager.GetCurrentSessionId();
+}
+
+string GetSessionName()
+{
+   if(g_sessionManager == NULL) return "Unknown";
+   return g_sessionManager.GetSessionName();
+}
+
+double GetSessionHigh()
+{
+   if(g_sessionManager == NULL) return 0;
+   return g_sessionManager.GetSessionHigh();
+}
+
+double GetSessionLow()
+{
+   if(g_sessionManager == NULL) return 0;
+   return g_sessionManager.GetSessionLow();
+}
+
+void ShowSessionInfo()
+{
+   if(g_sessionManager == NULL)
+   {
+      LOG_ERROR("❌ SessionManager not initialized");
+      return;
+   }
+   
+   SessionInfo info = g_sessionManager.GetSessionInfo();
+   LOG_INFO("=== SESSION INFO ===", g_debugMain);
+   LOG_INFO("  Session: " + info.name + " (" + info.shortName + ")", g_debugMain);
+   LOG_INFO("  Hours: " + info.hours, g_debugMain);
+   LOG_INFO("  Start: " + TimeToString(info.startTime), g_debugMain);
+   LOG_INFO("  End: " + TimeToString(info.endTime), g_debugMain);
+   LOG_INFO("  High: " + DoubleToString(info.high, _Digits), g_debugMain);
+   LOG_INFO("  Low: " + DoubleToString(info.low, _Digits), g_debugMain);
+   LOG_INFO("  Valid: " + (info.isValid ? "YES" : "NO"), g_debugMain);
+   LOG_INFO("=====================", g_debugMain);
 }
 
 // ============================================================

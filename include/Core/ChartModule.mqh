@@ -3,11 +3,13 @@
 //|                    Chart Drawing Module                          |
 //|                    PURELY VISUAL - NO CALCULATIONS              |
 //|                    ALL visual decisions (colors, emojis) here   |
+//|                    v1.07 - FIXED SESSION DRAWING               |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
-#property version "1.05"
+#property version "1.07"
 
 #include "../Data/PullbackModule.mqh"
+#include "../PackageManagers/SessionManager.mqh"
 
 //+------------------------------------------------------------------+
 //| Chart Module Class - ONLY Chart Module, NO PullbackModule      |
@@ -19,9 +21,10 @@ private:
    ENUM_TIMEFRAMES m_timeframe;
    string   m_prefix;
    int      m_rangeBars;
-   CPullbackModule* m_pullbackModule;  // Just a pointer - NOT a new class!
+   CPullbackModule* m_pullbackModule;
+   CSessionManager* m_sessionManager;
    
-   // Object names
+   // Object names - Pullback
    string   m_rangeHighName;
    string   m_rangeLowName;
    string   m_line40Name;
@@ -31,12 +34,26 @@ private:
    string   m_perfectZoneName;
    string   m_labelName;
    
+   // Object names - Sessions
+   string   m_sessionPrefix;
+   datetime m_lastSessionReset;
+   
    // VISUAL DECISION METHODS
    color GetZoneColor(string zoneCategory);
    string GetZoneEmoji(string zoneCategory);
    string GetZoneLabel(string zoneCategory);
    color GetPullbackLineColor(double adjustedPercent);
    string GetTooltip(SPullbackDrawingData &data);
+   
+   // Session methods
+   color GetSessionColor(int sessionId);
+   color GetSessionDashedColor(int sessionId);
+   string GetSessionShortName(int sessionId);
+   string GetSessionHours(int sessionId);
+   void DrawSessions();
+   void ClearSessions();
+   bool ShouldResetSessions();
+   void ResetSessions();
    
    // Helper methods
    void CreateHorizontalLine(string name, double price, datetime time1, datetime time2, 
@@ -50,6 +67,7 @@ public:
    ~CChartModule();
    
    void SetPullbackModule(CPullbackModule* pullbackModule) { m_pullbackModule = pullbackModule; }
+   void SetSessionManager(CSessionManager* sessionManager) { m_sessionManager = sessionManager; }
    void Update();
    void ClearDrawings();
 };
@@ -63,7 +81,10 @@ CChartModule::CChartModule(string symbol, ENUM_TIMEFRAMES tf, int rangeBars)
    m_timeframe = tf;
    m_rangeBars = rangeBars;
    m_prefix = "PBR_" + m_symbol + "_";
+   m_sessionPrefix = "SESS_" + m_symbol + "_";
    m_pullbackModule = NULL;
+   m_sessionManager = NULL;
+   m_lastSessionReset = 0;
    
    m_rangeHighName = m_prefix + "RangeHigh";
    m_rangeLowName = m_prefix + "RangeLow";
@@ -89,6 +110,191 @@ CChartModule::~CChartModule()
 void CChartModule::ClearDrawings()
 {
    ObjectsDeleteAll(0, m_prefix);
+   ObjectsDeleteAll(0, m_sessionPrefix);
+}
+
+//+------------------------------------------------------------------+
+//| Clear Sessions                                                  |
+//+------------------------------------------------------------------+
+void CChartModule::ClearSessions()
+{
+   ObjectsDeleteAll(0, m_sessionPrefix);
+}
+
+//+------------------------------------------------------------------+
+//| Should Reset Sessions - Reset after 24 hours                    |
+//+------------------------------------------------------------------+
+bool CChartModule::ShouldResetSessions()
+{
+   datetime now = TimeCurrent();
+   if(m_lastSessionReset == 0) return true;
+   if(now - m_lastSessionReset >= 86400) return true;  // 24 hours
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| Reset Sessions                                                  |
+//+------------------------------------------------------------------+
+void CChartModule::ResetSessions()
+{
+   ClearSessions();
+   m_lastSessionReset = TimeCurrent();
+}
+
+//+------------------------------------------------------------------+
+//| Get Session Color - Solid color for reference                   |
+//+------------------------------------------------------------------+
+color CChartModule::GetSessionColor(int sessionId)
+{
+   switch(sessionId)
+   {
+      case 0: return clrSilver;      // Off-Hours
+      case 1: return clrOrange;      // London
+      case 2: return clrGreen;       // NY
+      case 3: return clrBlue;        // Asia
+      default: return clrGray;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Get Session Dashed Color - For transparent dashed outlines      |
+//+------------------------------------------------------------------+
+color CChartModule::GetSessionDashedColor(int sessionId)
+{
+   switch(sessionId)
+   {
+      case 0: return clrSilver;      // Off-Hours (faint)
+      case 1: return clrOrange;      // London
+      case 2: return clrGreen;       // NY
+      case 3: return clrBlue;        // Asia
+      default: return clrGray;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Get Session Short Name                                          |
+//+------------------------------------------------------------------+
+string CChartModule::GetSessionShortName(int sessionId)
+{
+   switch(sessionId)
+   {
+      case 0: return "OFF";
+      case 1: return "LONDON";
+      case 2: return "NY";
+      case 3: return "ASIA";
+      default: return "UNK";
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Get Session Hours                                               |
+//+------------------------------------------------------------------+
+string CChartModule::GetSessionHours(int sessionId)
+{
+   switch(sessionId)
+   {
+      case 0: return "23:00-03:00";
+      case 1: return "10:30-18:30";
+      case 2: return "16:30-23:00";
+      case 3: return "03:00-09:00";
+      default: return "Unknown";
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Draw Sessions - Transparent dashed outlines that appear over time |
+//| ALL sessions remain visible until 24-hour reset                  |
+//+------------------------------------------------------------------+
+void CChartModule::DrawSessions()
+{
+   if(m_sessionManager == NULL) return;
+   
+   datetime now = TimeCurrent();
+   datetime todayStart = StringToTime(TimeToString(now, TIME_DATE));
+   
+   // Reset sessions every 24 hours (at midnight)
+   if(ShouldResetSessions())
+   {
+      ResetSessions();
+      todayStart = StringToTime(TimeToString(now, TIME_DATE));
+   }
+   
+   // Get current session info for high/low calculation
+   SessionInfo currentSession = m_sessionManager.GetSessionInfo();
+   if(!currentSession.isValid) return;
+   
+   // ═══ DRAW ALL SESSIONS FOR TODAY ═══
+   // Check each session type (0=Off-Hours, 1=London, 2=NY, 3=Asia)
+   for(int sessionId = 0; sessionId <= 3; sessionId++)
+   {
+      // Get session times for today using public methods
+      datetime startTime = m_sessionManager.GetSessionStartTimeForId(sessionId);
+      datetime endTime = m_sessionManager.GetSessionEndTimeForId(sessionId);
+      
+      // Skip if session hasn't started yet today
+      if(now < startTime) continue;
+      
+      // Skip if session ended before today started
+      if(endTime < todayStart) continue;
+      
+      // Cap end time to current time if session is still active
+      datetime drawEnd = (now < endTime) ? now : endTime;
+      
+      // Get session high/low (NO BUFFER)
+      double high = 0;
+      double low = 0;
+      
+      // Calculate session high/low for this specific session
+      int startBar = iBarShift(m_symbol, m_timeframe, startTime);
+      int endBar = iBarShift(m_symbol, m_timeframe, drawEnd);
+      int totalBars = startBar - endBar;
+      
+      if(totalBars > 0 && totalBars < 1000)
+      {
+         double highBuffer[], lowBuffer[];
+         ArraySetAsSeries(highBuffer, true);
+         ArraySetAsSeries(lowBuffer, true);
+         
+         if(CopyHigh(m_symbol, m_timeframe, endBar, totalBars, highBuffer) > 0 &&
+            CopyLow(m_symbol, m_timeframe, endBar, totalBars, lowBuffer) > 0)
+         {
+            high = highBuffer[ArrayMaximum(highBuffer, 0, WHOLE_ARRAY)];
+            low = lowBuffer[ArrayMinimum(lowBuffer, 0, WHOLE_ARRAY)];
+         }
+      }
+      
+      // If no data, use current price with tiny buffer (fallback only)
+      if(high == 0 || low == 0 || high <= low)
+      {
+         double currentPrice = SymbolInfoDouble(m_symbol, SYMBOL_BID);
+         high = currentPrice * 1.001;
+         low = currentPrice * 0.999;
+      }
+      
+      // NO BUFFER - use exact session high/low
+      
+      // Create transparent dashed rectangle for this session
+      color dashedColor = GetSessionDashedColor(sessionId);
+      string boxName = m_sessionPrefix + "Box_" + IntegerToString(sessionId);
+      
+      // Draw rectangle with transparent fill and dashed outline
+      CreateRectangle(boxName, 
+                      startTime, high, 
+                      drawEnd, low, 
+                      dashedColor, 
+                      false,          // No fill (transparent)
+                      STYLE_DASH);    // Dashed outline
+      
+      // Add session label at the left edge of the box
+      string labelName = m_sessionPrefix + "Label_" + IntegerToString(sessionId);
+      string labelText = GetSessionShortName(sessionId) + " " + GetSessionHours(sessionId);
+      
+      // Position label at top-left of session box
+      int labelX = 10 + (sessionId * 90);  // Spread labels horizontally
+      int labelY = 10 + (sessionId * 14);  // Stack vertically
+      
+      CreateLabel(labelName, labelText, labelX, labelY, dashedColor, 9);
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -236,6 +442,14 @@ void CChartModule::CreateLabel(string name, string text, int x, int y, color tex
 //+------------------------------------------------------------------+
 void CChartModule::Update()
 {
+   // ──────────────────────────────────────────────────────────────
+   // 1. DRAW SESSIONS (First, so they appear behind pullback)
+   // ──────────────────────────────────────────────────────────────
+   DrawSessions();
+   
+   // ──────────────────────────────────────────────────────────────
+   // 2. DRAW PULLBACK
+   // ──────────────────────────────────────────────────────────────
    if(m_pullbackModule == NULL) 
       return;
    
@@ -243,7 +457,8 @@ void CChartModule::Update()
    
    if(!data.isValid)
    {
-      ClearDrawings();
+      // Don't clear all drawings - just pullback drawings
+      ObjectsDeleteAll(0, m_prefix);
       return;
    }
    
@@ -253,7 +468,8 @@ void CChartModule::Update()
    color lineColor = GetPullbackLineColor(data.adjustedPercent);
    string tooltip = GetTooltip(data);
    
-   ClearDrawings();
+   // Clear only pullback drawings (not sessions)
+   ObjectsDeleteAll(0, m_prefix);
    
    datetime currentTime = TimeCurrent();
    datetime startTime = currentTime - (m_rangeBars * PeriodSeconds(m_timeframe));

@@ -18,7 +18,7 @@ input int      InpMagicNumber       = 123456;
 // ============================================================
 input bool     InpShowChart         = true;
 input bool     InpShowDashboard     = true;
-input int      InpRangeBars         = 60;
+input int      InpRangeBars         = 30;
 input ENUM_TIMEFRAMES InpEntryTF    = PERIOD_M5;
 
 // ============================================================
