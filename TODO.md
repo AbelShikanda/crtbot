@@ -516,3 +516,37 @@ class CUltimateTrendSetter : public CTrendSetter  // INHERITS File 2
 #include "../PackageManagers/ComponentManager.mqh"
 #include "../PackageManagers/PositionManager.mqh"
 #include "../PackageManagers/Riskmanager.mqh"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Portfoliomanager
+1. remove:
+Updated constructor log to reflect "Removed Emergency Exits"
+Updated component report to show "v3.7 - Removed Emergency Exits"
+
+
+PositionManager
+1. remove:
+Updated ManagePositions() to only get m_lossManagementEnabled from PortfolioManager (not the confidence value)
+Updated header comment to reflect "REMOVED LOSS CLOSE CONFIDENCE"
+
+Dashboard
+1. remove:
+Updated header comment to reflect "REMOVED LOSS MANAGEMENT"

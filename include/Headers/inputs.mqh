@@ -3,7 +3,7 @@
 //|                    Input Parameters                              |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
-#property version "1.01"
+#property version "1.02"
 
 // ============================================================
 // EA CONTROLS
@@ -52,14 +52,14 @@ input int      InpMaxSlippage       = 10;
 //+------------------------------------------------------------------+
 input bool   InpUseBreakeven = true;        // Use Breakeven Stop
 input int    InpBreakevenPips = 500;         // Breakeven after X pips
-input int    InpBreakevenBuffer = 100;        // Breakeven buffer in pips  ← ADD THIS
+input int    InpBreakevenBuffer = 100;        // Breakeven buffer in pips
 
 //+------------------------------------------------------------------+
 //| TRAILING STOP SETTINGS                                          |
 //+------------------------------------------------------------------+
-input bool   InpUseTrailingStop = true;     // ✅ ENABLED
-input int    InpTrailingStartPips = 1000;     // Start trailing after 30 pips
-input int    InpTrailingStopPips = 1000;      // Trail SL 30 pips behind
+input bool   InpUseTrailingStop = true;     // Use Trailing Stop
+input int    InpTrailingStartPips = 1000;     // Start trailing after X pips
+input int    InpTrailingStopPips = 1000;      // Trail SL X pips behind
 
 // ============================================================
 // PARTIAL CLOSE SETTINGS

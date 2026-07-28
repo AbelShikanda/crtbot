@@ -10,10 +10,10 @@
 //|                    + FIXED SL (NO BUFFER) + DEBUG               |
 //|                    + TREND MANAGER VERIFICATION                 |
 //|                    + BRACKET-BASED LOT SIZING                   |
-//|                    + v3.43: REMOVED MACD OPPOSITION CHECKS     |
+//|                    + v3.44: REMOVED ALL LOSS CLOSE CONFIG      |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
-#property version "3.43"
+#property version "3.44"
 #property strict
 
 // ============================================================
@@ -62,11 +62,11 @@ bool g_debugComponent = false;
 bool g_debugPullback = false;
 
 // ============================================================
-// INPUT PARAMETERS - LOSS MANAGEMENT
+// INPUT PARAMETERS - LOSS MANAGEMENT (REMOVED)
 // ============================================================
-input bool InpEnableLossManagement = true;        // Enable Loss Management
-input double InpLossCloseConfidence = 10.0;        // MACD Confidence % to close
-input bool InpCloseOnMACDDivergence = true;        // Close on MACD divergence
+// input bool InpEnableLossManagement = true;        // REMOVED
+// input double InpLossCloseConfidence = 10.0;        // REMOVED
+// input bool InpCloseOnMACDDivergence = true;        // REMOVED
 
 // ============================================================
 // GLOBAL VARIABLES
@@ -120,11 +120,9 @@ int OnInit()
 {
    Logger::Initialize();
    
-   LOG_INFO("=== PULLBACK EA v3.43 (REMOVED MACD OPPOSITION CHECKS) ===", g_debugMain);
+   LOG_INFO("=== PULLBACK EA v3.44 (REMOVED ALL LOSS CLOSE CONFIG) ===", g_debugMain);
    LOG_INFO("   Boost TP Distance: 100 points (when boost active)", g_debugMain);
    LOG_INFO("   TP never moves backward", g_debugMain);
-   LOG_INFO("   Loss Management: " + (InpEnableLossManagement ? "ENABLED" : "DISABLED"), g_debugMain);
-   LOG_INFO("   MACD Close Confidence: " + DoubleToString(InpLossCloseConfidence, 0) + "%", g_debugMain);
    LOG_INFO("   DEBUG: " + (g_debugMode ? "ON" : "OFF (minimal)"), g_debugMain);
    
    g_magicNumber = InpMagicNumber;
@@ -165,7 +163,7 @@ int OnInit()
    LOG_DEBUG("✅ PositionManager created", g_debugPosition);
    
    // ============================================================
-   // 4. CREATE PORTFOLIO MANAGER (v3.6 - Fixed MACD Loss Management)
+   // 4. CREATE PORTFOLIO MANAGER
    // ============================================================
    g_portfolioManager = new CPortfolioManager(_Symbol, g_magicNumber, g_trade);
    if(g_portfolioManager == NULL)
@@ -200,25 +198,9 @@ int OnInit()
    }
    
    // ============================================================
-   // ★★★ CONFIGURE LOSS MANAGEMENT ★★★
+   // ★★★ LOSS MANAGEMENT CONFIGURATION REMOVED ★★★
    // ============================================================
-   if(g_portfolioManager != NULL)
-   {
-      g_portfolioManager.SetLossManagementEnabled(InpEnableLossManagement);
-      g_portfolioManager.SetLossCloseConfidence(InpLossCloseConfidence);
-      LOG_INFO("✅ PortfolioManager Loss Management configured:", g_debugMain);
-      LOG_INFO("   Enabled: " + (InpEnableLossManagement ? "YES" : "NO"), g_debugMain);
-      LOG_INFO("   Close Confidence: " + DoubleToString(InpLossCloseConfidence, 0) + "%", g_debugMain);
-   }
-   
-   if(g_positionManager != NULL)
-   {
-      g_positionManager.SetLossManagementEnabled(InpEnableLossManagement);
-      g_positionManager.SetLossCloseConfidence(InpLossCloseConfidence);
-      LOG_INFO("✅ PositionManager Loss Management configured:", g_debugMain);
-      LOG_INFO("   Enabled: " + (InpEnableLossManagement ? "YES" : "NO"), g_debugMain);
-      LOG_INFO("   Close Confidence: " + DoubleToString(InpLossCloseConfidence, 0) + "%", g_debugMain);
-   }
+   // No loss management configuration - all loss management logic removed
    
    // ============================================================
    // 5. CREATE COMPONENT MANAGER
@@ -297,11 +279,10 @@ int OnInit()
    g_lastInitAttempt = 0;
    g_initializationFailed = false;
    
-   LOG_INFO("✅ EA INITIALIZED - v3.43 (Removed MACD Opposition Checks)", g_debugMain);
+   LOG_INFO("✅ EA INITIALIZED - v3.44 (All Loss Close Config Removed)", g_debugMain);
    LOG_INFO("   TrendManager → PortfolioManager: ✓", g_debugMain);
    LOG_INFO("   PortfolioManager → PositionManager: ✓ (Boost TP 100 pts)", g_debugMain);
    LOG_INFO("   PullbackModule → TrendManager: ✓", g_debugMain);
-   LOG_INFO("   Loss Management: " + (InpEnableLossManagement ? "ACTIVE" : "OFF"), g_debugMain);
    LOG_INFO("   Position management every 1 second", g_debugMain);
    LOG_INFO("=========================================================", g_debugMain);
    
@@ -467,15 +448,15 @@ void OnTimer()
    if(g_initStatus != INIT_STATUS_COMPLETE)
       return;
    
-   // PositionManager manages positions including loss management
+   // PositionManager manages positions
    if(g_positionManager != NULL)
       g_positionManager.ManagePositions();
    
-   // PortfolioManager monitors positions (MACD loss management only - no entry checks)
+   // PortfolioManager monitors positions (boost only - no loss management)
    if(g_portfolioManager != NULL)
    {
       g_portfolioManager.Update();
-      g_portfolioManager.MonitorPositions();
+      // g_portfolioManager.MonitorPositions(); // REMOVED - no loss management
    }
    
    static datetime lastReconnectCheck = 0;

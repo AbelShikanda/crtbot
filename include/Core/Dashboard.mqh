@@ -1,11 +1,11 @@
 //+------------------------------------------------------------------+
 //|                        Dashboard.mqh                            |
 //|                    Dashboard Display Module                      |
-//|                    v2.3 - ENHANCED BOOST DISPLAY               |
+//|                    v2.4 - REMOVED LOSS MANAGEMENT              |
 //|                    Shows RSI/VOL/ADX/MACD boost breakdown     |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
-#property version "2.3"
+#property version "2.4"
 
 // ============================================================
 // INCLUDES

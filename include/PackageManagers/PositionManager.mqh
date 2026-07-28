@@ -1,11 +1,11 @@
 //+------------------------------------------------------------------+
 //|                     PositionManager.mqh                          |
 //|              WITH PARTIAL CLOSE AT BREAKEVEN                    |
-//|              v3.3 - MINIMAL DEBUG FOR SL TRACING               |
+//|              v3.4 - REMOVED LOSS CLOSE CONFIDENCE              |
 //|              ONLY logs SL movements and ApplyTrailingStop calls |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
-#property version "3.3"
+#property version "3.4"
 
 #include "../Headers/Structures.mqh"
 #include "../Headers/Inputs.mqh"
@@ -39,7 +39,6 @@ private:
    
    // Loss Management Settings
    bool              m_lossManagementEnabled;
-   double            m_lossCloseConfidence;
    
    int FindStateIndex(ulong ticket);
    void RemoveState(ulong ticket);
@@ -69,9 +68,7 @@ public:
    }
    
    void SetLossManagementEnabled(bool enable) { m_lossManagementEnabled = enable; }
-   void SetLossCloseConfidence(double confidence) { m_lossCloseConfidence = confidence; }
    bool IsLossManagementEnabled() const { return m_lossManagementEnabled; }
-   double GetLossCloseConfidence() const { return m_lossCloseConfidence; }
    
    bool ExecuteTrade(PrescribedTrade &signal, double lotSize);
    void ManagePositions();
@@ -120,7 +117,6 @@ CPositionManager::CPositionManager(string symbol, int magicNumber, CTrade &trade
    m_boostCheckInterval = 2;
    m_boostTPDistance = 100.0;
    m_lossManagementEnabled = true;
-   m_lossCloseConfidence = 30.0;
    ArrayResize(m_states, 0);
 }
 
@@ -426,7 +422,6 @@ void CPositionManager::ManagePositions()
    if(m_portfolioManager != NULL)
    {
       m_lossManagementEnabled = m_portfolioManager.IsLossManagementEnabled();
-      m_lossCloseConfidence = m_portfolioManager.GetLossCloseConfidence();
    }
    
    for(int i = PositionsTotal() - 1; i >= 0; i--)
