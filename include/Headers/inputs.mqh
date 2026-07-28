@@ -105,6 +105,6 @@ input double InpTakeProfit2Multiplier = 4.0;   // Take Profit 2 Multiplier (ATR)
 // CONFIDENCE THRESHOLDS (Global Inputs)
 // ============================================================
 input group "=== CONFIDENCE THRESHOLDS ==="
-input double   InpBuyThreshold       = 45.0;   // Minimum confidence for BUY signals (0-100)
-input double   InpSellThreshold      = 35.0;   // Minimum confidence for SELL signals (0-100)
+input double   InpBuyThreshold       = 30.0;   // Minimum confidence for BUY signals (0-100)
+input double   InpSellThreshold      = 30.0;   // Minimum confidence for SELL signals (0-100)
 input double   InpNeutralThreshold   = 60.0;   // Minimum confidence for NEUTRAL trend (0-100)

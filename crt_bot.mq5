@@ -7,15 +7,13 @@
 //|                    + DYNAMIC CONFIDENCE THRESHOLDS              |
 //|                    + PORTFOLIO MANAGER INTEGRATION              |
 //|                    + BOOST-AWARE TP TRAILING                    |
-//|                    + ENHANCED MACD ENTRY CHECK                  |
 //|                    + FIXED SL (NO BUFFER) + DEBUG               |
 //|                    + TREND MANAGER VERIFICATION                 |
 //|                    + BRACKET-BASED LOT SIZING                   |
-//|                    + v3.42: CORRECTED MACD ENTRY CHECK          |
-//|                    REJECT entry if MACD OPPOSES trend ≥10%      |
+//|                    + v3.43: REMOVED MACD OPPOSITION CHECKS     |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
-#property version "3.42"
+#property version "3.43"
 #property strict
 
 // ============================================================
@@ -122,12 +120,11 @@ int OnInit()
 {
    Logger::Initialize();
    
-   LOG_INFO("=== PULLBACK EA v3.42 (CORRECTED MACD ENTRY CHECK) ===", g_debugMain);
+   LOG_INFO("=== PULLBACK EA v3.43 (REMOVED MACD OPPOSITION CHECKS) ===", g_debugMain);
    LOG_INFO("   Boost TP Distance: 100 points (when boost active)", g_debugMain);
    LOG_INFO("   TP never moves backward", g_debugMain);
    LOG_INFO("   Loss Management: " + (InpEnableLossManagement ? "ENABLED" : "DISABLED"), g_debugMain);
    LOG_INFO("   MACD Close Confidence: " + DoubleToString(InpLossCloseConfidence, 0) + "%", g_debugMain);
-   LOG_INFO("   MACD Entry: REJECT if MACD OPPOSES trend with10% confidence", g_debugMain);
    LOG_INFO("   DEBUG: " + (g_debugMode ? "ON" : "OFF (minimal)"), g_debugMain);
    
    g_magicNumber = InpMagicNumber;
@@ -300,7 +297,7 @@ int OnInit()
    g_lastInitAttempt = 0;
    g_initializationFailed = false;
    
-   LOG_INFO("✅ EA INITIALIZED - v3.42 (Corrected MACD Entry Check)", g_debugMain);
+   LOG_INFO("✅ EA INITIALIZED - v3.43 (Removed MACD Opposition Checks)", g_debugMain);
    LOG_INFO("   TrendManager → PortfolioManager: ✓", g_debugMain);
    LOG_INFO("   PortfolioManager → PositionManager: ✓ (Boost TP 100 pts)", g_debugMain);
    LOG_INFO("   PullbackModule → TrendManager: ✓", g_debugMain);
@@ -474,7 +471,7 @@ void OnTimer()
    if(g_positionManager != NULL)
       g_positionManager.ManagePositions();
    
-   // PortfolioManager monitors positions (MACD opposition)
+   // PortfolioManager monitors positions (MACD loss management only - no entry checks)
    if(g_portfolioManager != NULL)
    {
       g_portfolioManager.Update();
@@ -647,8 +644,7 @@ bool CalculateTakeProfits(int signal, double currentPrice, double rangeHigh, dou
 }
 
 //+------------------------------------------------------------------+
-//| CheckSignal - CORRECTED MACD ENTRY CHECK                        |
-//| REJECT entry if MACD OPPOSES the trend with    0% confidence     |
+//| CheckSignal - NO MACD OPPOSITION CHECKS                         |
 //| REJECT entry if Risk-Reward < 1.5:1                            |
 //+------------------------------------------------------------------+
 void CheckSignal()
@@ -727,58 +723,10 @@ void CheckSignal()
       analysis.overallConfidence = adjustedConfidence;
    }
    
-   double macdHistogram = analysis.macdData.histogramValue;
-   double macdConfidence = analysis.macdData.confidence;
-   string macdDirection = analysis.macdData.direction;
-   string trendDir = analysis.overallSentiment;
-
    // ============================================================
-   // ═══ CORRECTED MACD ENTRY CHECK ═══
-   // REJECT entry if MACD OPPOSES the trend with ≥10% confidence
+   // ═══ MACD OPPOSITION CHECKS COMPLETELY REMOVED ═══
+   // No rejection based on MACD opposing trend
    // ============================================================
-   if(trendDir != "NEUTRAL")
-   {
-      bool macdOpposesTrend = false;
-      double macdOppositionConfidence = 0;
-      
-      if(trendDir == "BULLISH")
-      {
-         // For LONG: REJECT if MACD is BEARISH with confidence ≥ 10%
-         if(macdDirection == "BEARISH" && macdConfidence >= 10.0)
-         {
-            macdOpposesTrend = true;
-            macdOppositionConfidence = macdConfidence;
-            
-            LOG_DEBUG("❌ LONG REJECTED: MACD OPPOSES BULLISH trend", g_debugMain);
-            LOG_DEBUG("   MACD Direction: " + macdDirection + " | Confidence: " + 
-                      DoubleToString(macdConfidence, 1) + "% (≥10% threshold)", g_debugMain);
-            return;  // ← REJECT ENTRY
-         }
-      }
-      else if(trendDir == "BEARISH")
-      {
-         // For SHORT: REJECT if MACD is BULLISH with confidence ≥ 10%
-         if(macdDirection == "BULLISH" && macdConfidence >= 10.0)
-         {
-            macdOpposesTrend = true;
-            macdOppositionConfidence = macdConfidence;
-            
-            LOG_DEBUG("❌ SHORT REJECTED: MACD OPPOSES BEARISH trend", g_debugMain);
-            LOG_DEBUG("   MACD Direction: " + macdDirection + " | Confidence: " + 
-                      DoubleToString(macdConfidence, 1) + "% (≥10% threshold)", g_debugMain);
-            return;  // ← REJECT ENTRY
-         }
-      }
-      
-      if(!macdOpposesTrend)
-      {
-         LOG_DEBUG("✅ MACD does NOT oppose " + trendDir + " trend - Entry allowed", g_debugMain);
-      }
-   }
-   else
-   {
-      LOG_DEBUG("⚠️ Trend is NEUTRAL - MACD check skipped", g_debugMain);
-   }
    
    double finalConfidence = analysis.overallConfidence;
    double thresholdToUse = GetThresholdForDirection(analysis.overallSentiment);
