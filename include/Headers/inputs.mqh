@@ -3,7 +3,7 @@
 //|                    Input Parameters                              |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
-#property version "1.02"
+#property version "1.03"
 
 // ============================================================
 // EA CONTROLS
@@ -18,7 +18,7 @@ input int      InpMagicNumber       = 123456;
 // ============================================================
 input bool     InpShowChart         = true;
 input bool     InpShowDashboard     = true;
-input int      InpRangeBars         = 30;
+input int      InpRangeBars         = 50;
 input ENUM_TIMEFRAMES InpEntryTF    = PERIOD_M5;
 
 // ============================================================
@@ -108,3 +108,11 @@ input group "=== CONFIDENCE THRESHOLDS ==="
 input double   InpBuyThreshold       = 30.0;   // Minimum confidence for BUY signals (0-100)
 input double   InpSellThreshold      = 30.0;   // Minimum confidence for SELL signals (0-100)
 input double   InpNeutralThreshold   = 60.0;   // Minimum confidence for NEUTRAL trend (0-100)
+
+// ============================================================
+// ORDER BLOCK DISPLAY
+// ============================================================
+input group "=== ORDER BLOCK DISPLAY ==="
+input bool     InpShowOrderBlocks = true;        // Show Order Blocks on Chart
+input int      InpMaxOrderBlocks = 10;           // Max OBs above and below price
+input ENUM_TIMEFRAMES InpOrderBlockTF = PERIOD_H4;  // Timeframe for OB detection

@@ -10,10 +10,10 @@
 //|                    + FIXED SL (NO BUFFER) + DEBUG               |
 //|                    + TREND MANAGER VERIFICATION                 |
 //|                    + BRACKET-BASED LOT SIZING                   |
-//|                    + v3.45: SESSION MANAGER INTEGRATED         |
+//|                    + v3.46: ORDER BLOCK DISPLAY INTEGRATED     |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
-#property version "3.45"
+#property version "3.46"
 #property strict
 
 // ============================================================
@@ -49,6 +49,7 @@
 #include "include/Core/ChartModule.mqh"
 #include "include/PackageManagers/ComponentManager.mqh"
 #include "include/PackageManagers/SessionManager.mqh"
+#include "include/Data/OrderblockModule.mqh"
 
 // ============================================================
 // GLOBAL DEBUG TOGGLES - SET TO FALSE BY DEFAULT
@@ -62,6 +63,7 @@ bool g_debugRisk = false;
 bool g_debugComponent = false;
 bool g_debugPullback = false;
 bool g_debugSession = false;
+bool g_debugOrderBlock = false;
 
 // ============================================================
 // INPUT PARAMETERS - LOSS MANAGEMENT (REMOVED)
@@ -80,6 +82,7 @@ CPortfolioManager *g_portfolioManager = NULL;
 CComponentManager *g_componentManager = NULL;
 CTrendManager     *g_trendManager = NULL;
 CSessionManager   *g_sessionManager = NULL;
+COrderBlockDisplay *g_orderBlockDisplay = NULL;
 CTrade             g_trade;
 int                g_magicNumber;
 datetime           g_lastBarTime = 0;
@@ -109,6 +112,7 @@ enum EInitStatus
    INIT_STATUS_COMPONENT_MANAGER,
    INIT_STATUS_PULLBACK,
    INIT_STATUS_SESSION_MANAGER,
+   INIT_STATUS_ORDER_BLOCK_DISPLAY,
    INIT_STATUS_COMPLETE
 };
 
@@ -124,9 +128,11 @@ int OnInit()
 {
    Logger::Initialize();
    
-   LOG_INFO("=== PULLBACK EA v3.45 (SESSION MANAGER INTEGRATED) ===", g_debugMain);
+   LOG_INFO("=== PULLBACK EA v3.46 (ORDER BLOCK DISPLAY INTEGRATED) ===", g_debugMain);
    LOG_INFO("   Boost TP Distance: 100 points (when boost active)", g_debugMain);
    LOG_INFO("   TP never moves backward", g_debugMain);
+   LOG_INFO("   Order Blocks: " + (InpShowOrderBlocks ? "ENABLED" : "DISABLED"), g_debugMain);
+   LOG_INFO("   Max OBs: " + IntegerToString(InpMaxOrderBlocks) + " above/below", g_debugMain);
    LOG_INFO("   DEBUG: " + (g_debugMode ? "ON" : "OFF (minimal)"), g_debugMain);
    
    g_magicNumber = InpMagicNumber;
@@ -251,7 +257,25 @@ int OnInit()
    LOG_DEBUG("✅ SessionManager created", g_debugSession);
    
    // ============================================================
-   // 8. CREATE SCENARIO NARRATIVE
+   // 8. CREATE ORDER BLOCK DISPLAY
+   // ============================================================
+   if(InpShowOrderBlocks)
+   {
+      g_orderBlockDisplay = new COrderBlockDisplay(_Symbol, InpOrderBlockTF);
+      if(g_orderBlockDisplay == NULL)
+      {
+         LOG_ERROR("❌ Failed to create OrderBlockDisplay");
+         return INIT_FAILED;
+      }
+      g_orderBlockDisplay.SetMaxBlocks(InpMaxOrderBlocks);
+      g_orderBlockDisplay.EnableDebug(g_debugOrderBlock);
+      LOG_DEBUG("✅ OrderBlockDisplay created", g_debugOrderBlock);
+      LOG_DEBUG("   TF: " + EnumToString(InpOrderBlockTF), g_debugOrderBlock);
+      LOG_DEBUG("   Max Blocks: " + IntegerToString(InpMaxOrderBlocks), g_debugOrderBlock);
+   }
+   
+   // ============================================================
+   // 9. CREATE SCENARIO NARRATIVE
    // ============================================================
    g_scenarioNarrative = new ScenarioNarrative();
    if(g_scenarioNarrative == NULL)
@@ -261,7 +285,7 @@ int OnInit()
    }
    
    // ============================================================
-   // 9. CREATE CHART MODULE
+   // 10. CREATE CHART MODULE
    // ============================================================
    if(InpShowChart)
    {
@@ -269,14 +293,22 @@ int OnInit()
       if(g_chartModule != NULL)
       {
          g_chartModule.SetPullbackModule(g_pullback);
+         
          // ═══ WIRE SESSION MANAGER TO CHART MODULE ═══
          g_chartModule.SetSessionManager(g_sessionManager);
          LOG_DEBUG("✅ ChartModule → SessionManager connected", g_debugMain);
+         
+         // ═══ WIRE ORDER BLOCK DISPLAY TO CHART MODULE ═══
+         if(InpShowOrderBlocks && g_orderBlockDisplay != NULL)
+         {
+            g_chartModule.SetOrderBlockDisplay(g_orderBlockDisplay);
+            LOG_DEBUG("✅ ChartModule → OrderBlockDisplay connected", g_debugMain);
+         }
       }
    }
    
    // ============================================================
-   // 10. CREATE DASHBOARD
+   // 11. CREATE DASHBOARD
    // ============================================================
    if(InpShowDashboard)
    {
@@ -288,7 +320,6 @@ int OnInit()
          g_dashboard.SetTrendManager(g_trendManager);
          g_dashboard.SetComponentManager(g_componentManager);
          g_dashboard.SetMinConfidenceThreshold(InpNeutralThreshold);
-         // g_dashboard.SetSessionManager(g_sessionManager);  // TODO: Add when dashboard supports sessions
       }
    }
    
@@ -299,12 +330,13 @@ int OnInit()
    g_lastInitAttempt = 0;
    g_initializationFailed = false;
    
-   LOG_INFO("✅ EA INITIALIZED - v3.45 (Session Manager Integrated)", g_debugMain);
+   LOG_INFO("✅ EA INITIALIZED - v3.46 (Order Block Display Integrated)", g_debugMain);
    LOG_INFO("   TrendManager → PortfolioManager: ✓", g_debugMain);
    LOG_INFO("   PortfolioManager → PositionManager: ✓ (Boost TP 100 pts)", g_debugMain);
    LOG_INFO("   PullbackModule → TrendManager: ✓", g_debugMain);
    LOG_INFO("   SessionManager: ✓ (Active Session Tracking)", g_debugMain);
    LOG_INFO("   ChartModule → SessionManager: ✓ (Session Overlays)", g_debugMain);
+   LOG_INFO("   ChartModule → OrderBlockDisplay: ✓ (H4 Order Blocks)", g_debugMain);
    LOG_INFO("   Position management every 1 second", g_debugMain);
    LOG_INFO("=========================================================", g_debugMain);
    
@@ -330,6 +362,34 @@ void OnTick()
    CheckSignal();
    UpdateChart();
    UpdateDashboard();
+   UpdateOrderBlocks();
+}
+
+//+------------------------------------------------------------------+
+//| UPDATE ORDER BLOCKS - Updates every 5 seconds                   |
+//+------------------------------------------------------------------+
+void UpdateOrderBlocks()
+{
+   if(!InpShowOrderBlocks || g_orderBlockDisplay == NULL)
+      return;
+   
+   // Update every 5 seconds
+   static datetime lastUpdateTime = 0;
+   datetime currentTime = TimeCurrent();
+   
+   if(currentTime - lastUpdateTime >= 5)
+   {
+      lastUpdateTime = currentTime;
+      g_orderBlockDisplay.Update();
+      
+      if(g_debugOrderBlock)
+      {
+         LOG_DEBUG("📊 Order Blocks Updated: " + 
+                   IntegerToString(g_orderBlockDisplay.GetTotalBlocksAbove()) + " above, " +
+                   IntegerToString(g_orderBlockDisplay.GetTotalBlocksBelow()) + " below",
+                   g_debugOrderBlock);
+      }
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -433,7 +493,18 @@ bool InitializeIndicatorsAsync()
       g_initStatus = INIT_STATUS_SESSION_MANAGER;
    }
    
-   if(g_initStatus == INIT_STATUS_SESSION_MANAGER)
+   if(g_initStatus < INIT_STATUS_ORDER_BLOCK_DISPLAY)
+   {
+      if(InpShowOrderBlocks && g_orderBlockDisplay != NULL)
+      {
+         // OrderBlockDisplay doesn't need async initialization - just update
+         g_orderBlockDisplay.Update();
+         LOG_DEBUG("✅ OrderBlockDisplay initialized", g_debugOrderBlock);
+      }
+      g_initStatus = INIT_STATUS_ORDER_BLOCK_DISPLAY;
+   }
+   
+   if(g_initStatus == INIT_STATUS_ORDER_BLOCK_DISPLAY)
    {
       if(g_pullback != NULL && g_trendManager != NULL)
       {
@@ -448,6 +519,15 @@ bool InitializeIndicatorsAsync()
             {
                LOG_DEBUG("📊 Current Session: " + g_sessionManager.GetSessionName() + 
                          " (" + g_sessionManager.GetSessionHours() + ")", g_debugSession);
+            }
+            
+            // Log Order Block info
+            if(g_orderBlockDisplay != NULL && g_debugOrderBlock)
+            {
+               LOG_DEBUG("📊 Order Blocks: " + 
+                         IntegerToString(g_orderBlockDisplay.GetTotalBlocksAbove()) + " above, " +
+                         IntegerToString(g_orderBlockDisplay.GetTotalBlocksBelow()) + " below",
+                         g_debugOrderBlock);
             }
             
             return true;
@@ -566,6 +646,7 @@ void OnDeinit(const int reason)
       g_positionManager.CloseAllPositions();
    }
    
+   if(g_orderBlockDisplay != NULL) { delete g_orderBlockDisplay; g_orderBlockDisplay = NULL; }
    if(g_sessionManager != NULL) { delete g_sessionManager; g_sessionManager = NULL; }
    if(g_portfolioManager != NULL) { delete g_portfolioManager; g_portfolioManager = NULL; }
    if(g_pullback != NULL) { delete g_pullback; g_pullback = NULL; }
@@ -582,6 +663,11 @@ void OnDeinit(const int reason)
    
    string dashPrefix = "DASH_" + _Symbol + "_";
    ObjectsDeleteAll(0, dashPrefix);
+   
+   // OrderBlockDisplay objects are deleted by its destructor
+   // but we also clean up any remaining OB objects
+   string obPrefix = "OB_" + _Symbol + "_";
+   ObjectsDeleteAll(0, obPrefix);
    
    EventKillTimer();
    Logger::Shutdown();
@@ -1357,6 +1443,52 @@ void ShowSessionInfo()
    LOG_INFO("  Low: " + DoubleToString(info.low, _Digits), g_debugMain);
    LOG_INFO("  Valid: " + (info.isValid ? "YES" : "NO"), g_debugMain);
    LOG_INFO("=====================", g_debugMain);
+}
+
+// ============================================================
+// ORDER BLOCK DISPLAY HELPER FUNCTIONS
+// ============================================================
+
+string GetOrderBlockSummary()
+{
+   if(g_orderBlockDisplay == NULL) return "OrderBlockDisplay not initialized";
+   return StringFormat("OBs: %d above, %d below",
+                       g_orderBlockDisplay.GetTotalBlocksAbove(),
+                       g_orderBlockDisplay.GetTotalBlocksBelow());
+}
+
+void ShowOrderBlocks()
+{
+   if(g_orderBlockDisplay == NULL)
+   {
+      LOG_ERROR("❌ OrderBlockDisplay not initialized");
+      return;
+   }
+   g_orderBlockDisplay.PrintOrderBlocks();
+}
+
+OrderBlock GetClosestOrderBlockAbove()
+{
+   if(g_orderBlockDisplay == NULL)
+   {
+      OrderBlock empty;
+      ZeroMemory(empty);
+      empty.isValid = false;
+      return empty;
+   }
+   return g_orderBlockDisplay.GetBlockAbove(0);
+}
+
+OrderBlock GetClosestOrderBlockBelow()
+{
+   if(g_orderBlockDisplay == NULL)
+   {
+      OrderBlock empty;
+      ZeroMemory(empty);
+      empty.isValid = false;
+      return empty;
+   }
+   return g_orderBlockDisplay.GetBlockBelow(0);
 }
 
 // ============================================================

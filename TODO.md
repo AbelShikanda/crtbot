@@ -548,4 +548,9 @@ Updated ManagePositions() to only get m_lossManagementEnabled from PortfolioMana
 Updated header comment to reflect "REMOVED LOSS CLOSE CONFIDENCE"
 
 Dashboard
-1. place desc in its own line
+1. place desc in its own line.
+2. add a section for rr.
+
+Mainfile
+1. add a buffer to sl
+2. 

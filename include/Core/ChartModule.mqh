@@ -3,13 +3,14 @@
 //|                    Chart Drawing Module                          |
 //|                    PURELY VISUAL - NO CALCULATIONS              |
 //|                    ALL visual decisions (colors, emojis) here   |
-//|                    v1.07 - FIXED SESSION DRAWING               |
+//|                    v1.09 - ORDER BLOCK DISPLAY ON ANY TF       |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
-#property version "1.07"
+#property version "1.09"
 
 #include "../Data/PullbackModule.mqh"
 #include "../PackageManagers/SessionManager.mqh"
+#include "../Data/OrderblockModule.mqh"
 
 //+------------------------------------------------------------------+
 //| Chart Module Class - ONLY Chart Module, NO PullbackModule      |
@@ -23,6 +24,7 @@ private:
    int      m_rangeBars;
    CPullbackModule* m_pullbackModule;
    CSessionManager* m_sessionManager;
+   COrderBlockDisplay* m_orderBlockDisplay;  // ← NEW
    
    // Object names - Pullback
    string   m_rangeHighName;
@@ -55,6 +57,10 @@ private:
    bool ShouldResetSessions();
    void ResetSessions();
    
+   // ═══ ORDER BLOCK METHODS ═══
+   void DrawOrderBlocks();
+   void ClearOrderBlocks();
+   
    // Helper methods
    void CreateHorizontalLine(string name, double price, datetime time1, datetime time2, 
                             color lineColor, ENUM_LINE_STYLE style = STYLE_SOLID, int width = 1);
@@ -68,8 +74,12 @@ public:
    
    void SetPullbackModule(CPullbackModule* pullbackModule) { m_pullbackModule = pullbackModule; }
    void SetSessionManager(CSessionManager* sessionManager) { m_sessionManager = sessionManager; }
+   void SetOrderBlockDisplay(COrderBlockDisplay* orderBlockDisplay) { m_orderBlockDisplay = orderBlockDisplay; }
    void Update();
    void ClearDrawings();
+   
+   // ═══ NEW: Get timeframe ═══
+   ENUM_TIMEFRAMES GetTimeframe() { return m_timeframe; }
 };
 
 //+------------------------------------------------------------------+
@@ -84,6 +94,7 @@ CChartModule::CChartModule(string symbol, ENUM_TIMEFRAMES tf, int rangeBars)
    m_sessionPrefix = "SESS_" + m_symbol + "_";
    m_pullbackModule = NULL;
    m_sessionManager = NULL;
+   m_orderBlockDisplay = NULL;
    m_lastSessionReset = 0;
    
    m_rangeHighName = m_prefix + "RangeHigh";
@@ -94,6 +105,11 @@ CChartModule::CChartModule(string symbol, ENUM_TIMEFRAMES tf, int rangeBars)
    m_pullbackLineName = m_prefix + "PullbackLine";
    m_perfectZoneName = m_prefix + "PerfectZone";
    m_labelName = m_prefix + "Label";
+   
+   Print("📊 ChartModule CONSTRUCTOR called");
+   Print("   Symbol: ", m_symbol);
+   Print("   Timeframe: ", EnumToString(m_timeframe));
+   Print("   Range Bars: ", m_rangeBars);
 }
 
 //+------------------------------------------------------------------+
@@ -111,6 +127,7 @@ void CChartModule::ClearDrawings()
 {
    ObjectsDeleteAll(0, m_prefix);
    ObjectsDeleteAll(0, m_sessionPrefix);
+   // OrderBlockDisplay handles its own clearing
 }
 
 //+------------------------------------------------------------------+
@@ -119,6 +136,15 @@ void CChartModule::ClearDrawings()
 void CChartModule::ClearSessions()
 {
    ObjectsDeleteAll(0, m_sessionPrefix);
+}
+
+//+------------------------------------------------------------------+
+//| Clear Order Blocks                                              |
+//+------------------------------------------------------------------+
+void CChartModule::ClearOrderBlocks()
+{
+   if(m_orderBlockDisplay != NULL)
+      m_orderBlockDisplay.ClearDrawings();
 }
 
 //+------------------------------------------------------------------+
@@ -298,6 +324,18 @@ void CChartModule::DrawSessions()
 }
 
 //+------------------------------------------------------------------+
+//| DRAW ORDER BLOCKS - Delegate to OrderBlockDisplay              |
+//| OrderBlockDisplay uses H4 for detection, but draws on ANY TF   |
+//+------------------------------------------------------------------+
+void CChartModule::DrawOrderBlocks()
+{
+   if(m_orderBlockDisplay != NULL)
+   {
+      m_orderBlockDisplay.Update();
+   }
+}
+
+//+------------------------------------------------------------------+
 //| VISUAL DECISION: Get Zone Color                                 |
 //+------------------------------------------------------------------+
 color CChartModule::GetZoneColor(string zoneCategory)
@@ -443,12 +481,17 @@ void CChartModule::CreateLabel(string name, string text, int x, int y, color tex
 void CChartModule::Update()
 {
    // ──────────────────────────────────────────────────────────────
-   // 1. DRAW SESSIONS (First, so they appear behind pullback)
+   // 1. DRAW ORDER BLOCKS (First, so they appear behind everything)
+   // ──────────────────────────────────────────────────────────────
+   DrawOrderBlocks();
+   
+   // ──────────────────────────────────────────────────────────────
+   // 2. DRAW SESSIONS
    // ──────────────────────────────────────────────────────────────
    DrawSessions();
    
    // ──────────────────────────────────────────────────────────────
-   // 2. DRAW PULLBACK
+   // 3. DRAW PULLBACK
    // ──────────────────────────────────────────────────────────────
    if(m_pullbackModule == NULL) 
       return;
@@ -468,7 +511,7 @@ void CChartModule::Update()
    color lineColor = GetPullbackLineColor(data.adjustedPercent);
    string tooltip = GetTooltip(data);
    
-   // Clear only pullback drawings (not sessions)
+   // Clear only pullback drawings (not sessions or order blocks)
    ObjectsDeleteAll(0, m_prefix);
    
    datetime currentTime = TimeCurrent();
