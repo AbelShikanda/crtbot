@@ -1,11 +1,11 @@
 //+------------------------------------------------------------------+
 //|                        Dashboard.mqh                            |
 //|                    Dashboard Display Module                      |
-//|                    v2.4 - REMOVED LOSS MANAGEMENT              |
+//|                    v2.8 - COMPACT DASHBOARD LAYOUT             |
 //|                    Shows RSI/VOL/ADX/MACD boost breakdown     |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
-#property version "2.4"
+#property version "2.8"
 
 // ============================================================
 // INCLUDES
@@ -62,7 +62,6 @@ private:
    
    void BuildComponentLines(SComponentResult &compResult, SComponentData &componentData, string &line1, string &line2);
    string GetThresholdDisplay(SMarketAnalysis &analysis, double finalConfidence, double portfolioBoost);
-   string GetBoostBreakdown(SComponentData &componentData);
    string PadRight(string text, int width);
    
 public:
@@ -124,7 +123,7 @@ CDashboard::CDashboard(string symbol)
    m_col4X = 380;
    m_dashWidth = 520;
    
-   LOG_DEBUG("Dashboard created - Symbol: " + m_symbol + " (ENHANCED BOOST DISPLAY)", g_dashboardDebugMode);
+   LOG_DEBUG("Dashboard created - Symbol: " + m_symbol, g_dashboardDebugMode);
 }
 
 //+------------------------------------------------------------------+
@@ -347,27 +346,6 @@ string CDashboard::GetRiskLevel(ENUM_MARKET_SCENARIO scenario)
 }
 
 //+------------------------------------------------------------------+
-//| Get Boost Breakdown - Shows RSI/VOL/ADX/MACD contributions     |
-//+------------------------------------------------------------------+
-string CDashboard::GetBoostBreakdown(SComponentData &componentData)
-{
-   double boost = componentData.portfolioBoost;
-   
-   if(boost == 0)
-      return "   ⚠️ No boost active";
-   
-   string result = "";
-   string emoji = GetBoostEmoji(boost);
-   
-   result += "   " + emoji + " Total Boost: +" + DoubleToString(boost, 1) + "%";
-   
-   // Add breakdown note
-   result += " (RSI/VOL/ADX/MACD)";
-   
-   return result;
-}
-
-//+------------------------------------------------------------------+
 //| Get Threshold Display - WITH ENHANCED BOOST                    |
 //+------------------------------------------------------------------+
 string CDashboard::GetThresholdDisplay(SMarketAnalysis &analysis, double finalConfidence, double portfolioBoost)
@@ -495,61 +473,38 @@ string CDashboard::GetDashboardText(
    output += "│ ◆ PULLBACK DASHBOARD ◆ " + m_symbol + PadRight("", 40 - StringLen(m_symbol)) + "│\n";
    output += "├─────────────────────────────────────────────────────────────────────────────┤\n";
    
-   string scenarioDisplay = "│ SCENARIO #" + IntegerToString((int)scenarioResult.scenario) + ": " + GetScenarioName(scenarioResult.scenario);
-   output += scenarioDisplay + PadRight("", 72 - StringLen(scenarioDisplay)) + "│\n";
+   // MERGED SCENARIO + DESCRIPTION
+   string scenarioDisplay = "│ SCENARIO #" + IntegerToString((int)scenarioResult.scenario) + ": " + GetScenarioName(scenarioResult.scenario) + " | " + scenarioResult.description;
+   if(StringLen(scenarioDisplay) > 74) scenarioDisplay = StringSubstr(scenarioDisplay, 0, 74) + "...";
+   output += scenarioDisplay + PadRight("", 74 - StringLen(scenarioDisplay)) + "│\n";
    
    output += "├─────────────────────────────────────────────────────────────────────────────┤\n";
-   output += "│ Description: " + scenarioResult.description + "\n";
-   output += "├─────────────────────────────────────────────────────────────────────────────┤\n";
-   output += "│ ACTION: " + scenarioResult.action + "\n";
-   output += "│ RISK: " + scenarioResult.riskLevel + "\n";
-   output += "├─────────────────────────────────────────────────────────────────────────────┤\n";
    
+   // COMPONENTS + TREND merged into one section
    if(m_trendManager != NULL)
    {
       string trendDir = m_trendManager.GetDirection();
       double trendStrength = m_trendManager.GetStrength();
       double trendConfidence = m_trendManager.GetTrendConfidence();
       string arrow = (trendDir == "BULLISH") ? "▲" : (trendDir == "BEARISH") ? "▼" : "●";
-      output += "│ TREND: " + arrow + " " + trendDir + " | Strength: " + DoubleToString(trendStrength, 1) + "% | Confidence: " + DoubleToString(trendConfidence, 1) + "%\n";
+      output += "│ COMPONENTS:    TREND: " + arrow + " " + trendDir + " | Stren: " + DoubleToString(trendStrength, 1) + "% | Conf: " + DoubleToString(trendConfidence, 1) + "%\n";
    }
    else
    {
-      output += "│ TREND: ● NEUTRAL | Strength: 0.0% | Confidence: 0.0%\n";
+      output += "│ COMPONENTS:    TREND: ● NEUTRAL | Stren: 0.0% | Conf: 0.0%\n";
    }
-   
-   output += "├─────────────────────────────────────────────────────────────────────────────┤\n";
-   output += "│ COMPONENTS (▲▼ + Alignment):\n";
    
    string compLine1, compLine2;
    BuildComponentLines(compResult, componentData, compLine1, compLine2);
    output += "│   " + compLine1 + "\n";
    output += "│   " + compLine2 + "\n";
    
-   output += "├─────────────────────────────────────────────────────────────────────────────┤\n";
-   output += "│ AGGREGATED:\n";
-   output += StringFormat("│   %s | Score(DISPLAY): %.1f%% | Base Conf: %.1f%% | Active: %d/6 | Agree: %d | Disagree: %d\n",
-                         compResult.direction, 
-                         compResult.overallScore,
-                         compResult.confidence,
-                         compResult.activeComponents,
-                         compResult.agreeingComponents,
-                         compResult.disagreeingComponents);
+   // MERGED AGGREGATED SECTION
+   output += "│   " + compResult.direction + " | Base Conf: " + DoubleToString(compResult.confidence, 1) + "% | Active: " + IntegerToString(compResult.activeComponents) + "/6 | Agree: " + IntegerToString(compResult.agreeingComponents) + " | Disagree: " + IntegerToString(compResult.disagreeingComponents) + "\n";
    
-   // FINAL CONFIDENCE with BOOST
+   // Threshold display (includes final confidence and boost)
    double finalConf = componentData.finalConfidence;
    double boost = componentData.portfolioBoost;
-   string boostEmoji = GetBoostEmoji(boost);
-   string boostSign = (boost > 0) ? "+" : "";
-   string boostStr = "";
-   if(boost != 0)
-      boostStr = boostEmoji + " " + boostSign + DoubleToString(boost, 1) + "%";
-   else
-      boostStr = "✅ 0.0%";
-   
-   output += StringFormat("│   📊 FINAL CONFIDENCE: %.1f%% | Boost: %s\n", finalConf, boostStr);
-   output += "│   " + GetBoostBreakdown(componentData) + "\n";
-   
    string thresholdDisplay = GetThresholdDisplay(analysis, finalConf, boost);
    output += "│   " + thresholdDisplay + "\n";
    
@@ -559,18 +514,29 @@ string CDashboard::GetDashboardText(
    if(trade.signal != 0)
    {
       string dirSymbol = trade.signal == 1 ? "▲ BUY" : "▼ SELL";
-      output += StringFormat("│   DIR: %-10s LOT: %-8.2f R:R: %-8.2f\n", 
-                             dirSymbol, m_lotSize, trade.riskRewardRatio);
-      output += StringFormat("│   ENTRY: %-10.5f SL: %-10.5f TP: %-10.5f\n",
-                             trade.entryPrice, trade.stopLoss, trade.takeProfit);
-      output += StringFormat("│   TP2: %-10.5f 75%%: %-10.5f\n",
-                             trade.takeProfit2, trade.partialLevel75);
+      bool isOpenPosition = (trade.entryPrice > 0 && trade.stopLoss > 0);
+      string statusText = isOpenPosition ? "📊 OPEN" : "📈 SIGNAL";
+      
+      // Calculate profit if position is open
+      double profitPips = 0;
+      if(isOpenPosition)
+      {
+         double currentPrice = SymbolInfoDouble(m_symbol, SYMBOL_BID);
+         if(trade.signal == 1)
+            profitPips = (currentPrice - trade.entryPrice) / SymbolInfoDouble(m_symbol, SYMBOL_POINT);
+         else
+            profitPips = (trade.entryPrice - currentPrice) / SymbolInfoDouble(m_symbol, SYMBOL_POINT);
+      }
+      
+      string profitText = isOpenPosition ? StringFormat("%.1f pips", profitPips) : "0.0 pips";
+      color profitColor = (isOpenPosition && profitPips >= 0) ? clrLimeGreen : clrRed;
+      
+      output += StringFormat("│ %s %s │ LOT: %-8.2f │ R:R: %-8.2f │ Profit: %s\n", 
+                             statusText, dirSymbol, m_lotSize, trade.riskRewardRatio, profitText);
    }
    else
    {
-      output += "│   DIR: ● HOLD         LOT: 0.00         R:R: 0.00\n";
-      output += "│   ENTRY: 0.00000      SL: 0.00000      TP: 0.00000\n";
-      output += "│   TP2: 0.00000       75%: 0.00000\n";
+      output += "│ ● HOLDING / NO POSITION │ LOT: 0.00 │ R:R: 0.00 │ Profit: 0.0 pips\n";
    }
    
    output += "└─────────────────────────────────────────────────────────────────────────────┘";
@@ -580,7 +546,7 @@ string CDashboard::GetDashboardText(
 }
 
 // ============================================================
-// UPDATE DASHBOARD - WITH IMPROVED TRADE DISPLAY
+// UPDATE DASHBOARD - COMPACT LAYOUT
 // ============================================================
 void CDashboard::Update(
    RangeData &range,
@@ -606,50 +572,35 @@ void CDashboard::Update(
    int x = m_startX;
    int fs = 8;
    int fsSmall = 7;
-   int fsLarge = 9;
+   int fsTitle = 9;
    
-   ENUM_MARKET_SCENARIO currentScenario = scenarioResult.scenario;
-   color scenarioColor = GetScenarioColor(currentScenario);
-   string scenarioName = GetScenarioName(currentScenario);
-   
+   // Top border
    CreateLabel(m_prefix + "TopLeft", "┌", x, y, clrGray, 8, false);
    CreateLabel(m_prefix + "TopLine", "──────────────────────────────────────────────────────", x + 8, y, clrGray, 8, false);
    CreateLabel(m_prefix + "TopRight", "┐", x + 248, y, clrGray, 8, false);
    y += m_lineHeight;
    
-   CreateLabel(m_prefix + "Title", "│ ◆ PULLBACK DASHBOARD ◆ " + m_symbol, x, y, clrWhite, 9, true);
+   // Title
+   CreateLabel(m_prefix + "Title", "│ ◆ PULLBACK DASHBOARD ◆ " + m_symbol, x, y, clrWhite, fsTitle, true);
    y += m_lineHeight;
    
    CreateLabel(m_prefix + "Sep1", "├──────────────────────────────────────────────────────┤", x, y, clrGray, 8, false);
    y += m_lineHeight + 1;
    
-   string scenarioDisplay = "│ SCENARIO #" + IntegerToString((int)currentScenario) + ": " + scenarioName;
+   // MERGED SCENARIO + DESCRIPTION
+   ENUM_MARKET_SCENARIO currentScenario = scenarioResult.scenario;
+   color scenarioColor = GetScenarioColor(currentScenario);
+   string scenarioName = GetScenarioName(currentScenario);
+   
+   string scenarioDisplay = "│ SCENARIO #" + IntegerToString((int)currentScenario) + ": " + scenarioName + " | " + scenarioResult.description;
+   if(StringLen(scenarioDisplay) > 55) scenarioDisplay = StringSubstr(scenarioDisplay, 0, 55) + "...";
    CreateLabel(m_prefix + "Scenario", scenarioDisplay, x, y, scenarioColor, fs, true);
    y += m_lineHeight + 1;
    
    CreateLabel(m_prefix + "Sep2", "├──────────────────────────────────────────────────────┤", x, y, clrGray, 8, false);
    y += m_lineHeight + 1;
    
-   string descText = "│ Description: " + scenarioResult.description;
-   if(StringLen(descText) > 55) descText = StringSubstr(descText, 0, 55) + "...";
-   CreateLabel(m_prefix + "Desc", descText, x, y, clrLightGray, fs, false);
-   y += m_lineHeight;
-   
-   CreateLabel(m_prefix + "Sep3", "├──────────────────────────────────────────────────────┤", x, y, clrGray, 8, false);
-   y += m_lineHeight + 1;
-   
-   string actionText = "│ ACTION: " + scenarioResult.action;
-   CreateLabel(m_prefix + "Action", actionText, x, y, clrCyan, fs, true);
-   y += m_lineHeight;
-   
-   string riskText = "│ RISK: " + scenarioResult.riskLevel;
-   color riskColor = GetRiskColor(scenarioResult.riskLevel);
-   CreateLabel(m_prefix + "Risk", riskText, x, y, riskColor, fs, true);
-   y += m_lineHeight + 1;
-   
-   CreateLabel(m_prefix + "Sep4", "├──────────────────────────────────────────────────────┤", x, y, clrGray, 8, false);
-   y += m_lineHeight + 1;
-   
+   // COMPONENTS + TREND merged into one line
    if(m_trendManager != NULL)
    {
       string trendDir = m_trendManager.GetDirection();
@@ -658,20 +609,15 @@ void CDashboard::Update(
       string arrow = (trendDir == "BULLISH") ? "▲" : (trendDir == "BEARISH") ? "▼" : "●";
       color trendColor = GetTrendColor(trendDir);
       
-      string trendDisplay = "│ TREND: " + arrow + " " + trendDir + " | Strength: " + DoubleToString(trendStrength, 1) + "% | Confidence: " + DoubleToString(trendConfidence, 1) + "%";
+      string trendDisplay = "│ COMPONENTS:    TREND: " + arrow + " " + trendDir + " | Stren: " + DoubleToString(trendStrength, 1) + "% | Conf: " + DoubleToString(trendConfidence, 1) + "%";
       CreateLabel(m_prefix + "Trend", trendDisplay, x, y, trendColor, fsSmall, false);
+      y += m_lineHeight;
    }
    else
    {
-      CreateLabel(m_prefix + "Trend", "│ TREND: ● NEUTRAL | Strength: 0.0% | Confidence: 0.0%", x, y, clrYellow, fsSmall, false);
+      CreateLabel(m_prefix + "Trend", "│ COMPONENTS:    TREND: ● NEUTRAL | Stren: 0.0% | Conf: 0.0%", x, y, clrYellow, fsSmall, false);
+      y += m_lineHeight;
    }
-   y += m_lineHeight + 1;
-   
-   CreateLabel(m_prefix + "Sep5", "├──────────────────────────────────────────────────────┤", x, y, clrGray, 8, false);
-   y += m_lineHeight + 1;
-   
-   CreateLabel(m_prefix + "ComponentsHeader", "│ COMPONENTS (▲▼ + Alignment):", x, y, clrWhite, fs, false);
-   y += m_lineHeight;
    
    CreateLabel(m_prefix + "Legend", "│   Format: ▲WeightName:Score%✓  (PB=Score, Others=Confidence)", x + 2, y, clrGray, 6, false);
    y += m_lineHeight;
@@ -682,48 +628,18 @@ void CDashboard::Update(
    CreateLabel(m_prefix + "Components1", "│   " + compLine1, x + 2, y, clrLightGray, fsSmall, false);
    y += m_lineHeight;
    CreateLabel(m_prefix + "Components2", "│   " + compLine2, x + 2, y, clrLightGray, fsSmall, false);
-   y += m_lineHeight + 1;
-   
-   CreateLabel(m_prefix + "Sep6", "├──────────────────────────────────────────────────────┤", x, y, clrGray, 8, false);
-   y += m_lineHeight + 1;
-   
-   CreateLabel(m_prefix + "AggHeader", "│ AGGREGATED:", x, y, clrWhite, fs, false);
    y += m_lineHeight;
    
+   // AGGREGATED SECTION
    color aggColor = GetComponentColor(compResult.direction);
    
-   string aggLine1 = StringFormat("│   %s | Base Conf: %.1f%% | Active: %d/6 | Agree: %d | Disagree: %d",
-                                  compResult.direction, 
-                                  compResult.confidence,
-                                  compResult.activeComponents,
-                                  compResult.agreeingComponents,
-                                  compResult.disagreeingComponents);
+   string aggLine1 = "│   " + compResult.direction + " | Base Conf: " + DoubleToString(compResult.confidence, 1) + "% | Active: " + IntegerToString(compResult.activeComponents) + "/6 | Agree: " + IntegerToString(compResult.agreeingComponents) + " | Disagree: " + IntegerToString(compResult.disagreeingComponents);
    CreateLabel(m_prefix + "Agg1", aggLine1, x + 2, y, aggColor, fsSmall, false);
    y += m_lineHeight;
    
-   // FINAL CONFIDENCE WITH BOOST
+   // THRESHOLD DISPLAY (includes final confidence and boost)
    double finalConf = componentData.finalConfidence;
    double boost = componentData.portfolioBoost;
-   double baseConf = componentData.baseConfidence;
-   
-   string boostEmoji = GetBoostEmoji(boost);
-   string boostSign = (boost > 0) ? "+" : "";
-   string boostDisplay = "";
-   if(boost != 0)
-      boostDisplay = boostEmoji + " " + boostSign + DoubleToString(boost, 1) + "%";
-   else
-      boostDisplay = "✅ 0.0%";
-   
-   color finalConfColor = GetConfidenceColor(finalConf);
-   
-   string finalConfLine = StringFormat("│   📊 FINAL CONFIDENCE: %.1f%% (Base: %.1f%% + Boost: %s)", 
-                                       finalConf, baseConf, boostDisplay);
-   CreateLabel(m_prefix + "FinalConf", finalConfLine, x + 2, y, finalConfColor, fsSmall, true);
-   y += m_lineHeight;
-   
-   string boostBreakdown = GetBoostBreakdown(componentData);
-   CreateLabel(m_prefix + "BoostBreakdown", boostBreakdown, x + 2, y, clrCyan, fsSmall, false);
-   y += m_lineHeight;
    
    string direction = compResult.direction;
    double threshold = 70.0;
@@ -756,95 +672,64 @@ void CDashboard::Update(
       thresholdColor = clrYellow;
    }
    
+   string boostEmoji = GetBoostEmoji(boost);
+   string boostSign = (boost > 0) ? "+" : "";
+   string boostDisplay = "";
+   if(boost != 0)
+      boostDisplay = boostEmoji + " " + boostSign + DoubleToString(boost, 1) + "%";
+   else
+      boostDisplay = "✅ 0.0%";
+   
    string dirLabel = (direction == "BULLISH") ? "BUY" : (direction == "BEARISH") ? "SELL" : "";
-   string thresholdLine = StringFormat("│   Threshold: %s %s", dirLabel, thresholdStatus);
+   string thresholdLine = "│   Final Conf: " + DoubleToString(finalConf, 1) + "% | Boost: " + boostDisplay + " | Threshold: " + dirLabel + " " + thresholdStatus;
    CreateLabel(m_prefix + "Threshold", thresholdLine, x + 2, y, thresholdColor, fsSmall, false);
    y += m_lineHeight + 1;
    
-   CreateLabel(m_prefix + "Sep7", "├──────────────────────────────────────────────────────┤", x, y, clrGray, 8, false);
+   CreateLabel(m_prefix + "Sep3", "├──────────────────────────────────────────────────────┤", x, y, clrGray, 8, false);
    y += m_lineHeight + 1;
    
+   // TRADE SECTION - Compact with profit
    CreateLabel(m_prefix + "TradeHeader", "│ TRADE:", x, y, clrWhite, fs, true);
    y += m_lineHeight;
    
-   // ============================================================
-   // IMPROVED TRADE DISPLAY - Shows actual position data
-   // ============================================================
    if(trade.signal != 0)
    {
       color dirColor = trade.signal == 1 ? clrLimeGreen : clrRed;
       string dirSymbol = trade.signal == 1 ? "▲ BUY" : "▼ SELL";
       
-      // Check if this is an open position or a signal
       bool isOpenPosition = (trade.entryPrice > 0 && trade.stopLoss > 0);
-      
       string statusText = isOpenPosition ? "📊 OPEN" : "📈 SIGNAL";
       string lotText = "LOT: " + DoubleToString(m_lotSize, 2);
       string rrText = "R:R: " + DoubleToString(trade.riskRewardRatio, 2);
-      color rrColor = GetRRColor(trade.riskRewardRatio);
       
-      // Direction line
-      string tradeDirLine = "│   " + statusText + " " + dirSymbol + "  " + lotText + "  " + rrText;
-      CreateLabel(m_prefix + "TradeDir", tradeDirLine, x, y, dirColor, fs, false);
-      y += m_lineHeight;
-      
+      // Calculate profit if position is open
+      double profitPips = 0;
       if(isOpenPosition)
       {
-         // Show actual position data
-         string tradeEntryLine = "│   ENTRY: " + DoubleToString(trade.entryPrice, _Digits) + "     SL: " + DoubleToString(trade.stopLoss, _Digits) + "     TP: " + DoubleToString(trade.takeProfit, _Digits);
-         CreateLabel(m_prefix + "TradeEntry", tradeEntryLine, x, y, clrWhite, fs, false);
-         y += m_lineHeight;
-         
-         // Calculate current profit if possible
          double currentPrice = SymbolInfoDouble(m_symbol, SYMBOL_BID);
-         double profitPips = 0;
          if(trade.signal == 1)
             profitPips = (currentPrice - trade.entryPrice) / SymbolInfoDouble(m_symbol, SYMBOL_POINT);
          else
             profitPips = (trade.entryPrice - currentPrice) / SymbolInfoDouble(m_symbol, SYMBOL_POINT);
-         
-         string profitText = "│   PROFIT: " + DoubleToString(profitPips, 1) + " pips";
-         color profitColor = profitPips >= 0 ? clrLimeGreen : clrRed;
-         CreateLabel(m_prefix + "TradeProfit", profitText, x, y, profitColor, fs, false);
-         y += m_lineHeight;
-         
-         // Show TP2 and 75% level if available
-         if(trade.takeProfit2 > 0 && trade.partialLevel75 > 0)
-         {
-            string tradeTP2Line = "│   TP2: " + DoubleToString(trade.takeProfit2, _Digits) + "  75%: " + DoubleToString(trade.partialLevel75, _Digits);
-            CreateLabel(m_prefix + "TradeTP2", tradeTP2Line, x, y, clrGold, fs, false);
-            y += m_lineHeight;
-         }
       }
-      else
-      {
-         // Signal only - show entry, SL, TP estimates
-         if(trade.entryPrice > 0)
-         {
-            string tradeEntryLine = "│   ENTRY: " + DoubleToString(trade.entryPrice, _Digits) + "     SL: " + DoubleToString(trade.stopLoss, _Digits) + "     TP: " + DoubleToString(trade.takeProfit, _Digits);
-            CreateLabel(m_prefix + "TradeEntry", tradeEntryLine, x, y, clrWhite, fs, false);
-            y += m_lineHeight;
-         }
-         else
-         {
-            CreateLabel(m_prefix + "TradeEntry", "│   ENTRY: WAITING FOR SIGNAL", x, y, clrYellow, fs, false);
-            y += m_lineHeight;
-         }
-      }
+      
+      string profitText = isOpenPosition ? StringFormat("%.1f pips", profitPips) : "0.0 pips";
+      color profitColor = (isOpenPosition && profitPips >= 0) ? clrLimeGreen : clrRed;
+      
+      string tradeLine = "│ " + statusText + " " + dirSymbol + "│ " + lotText + "│ " + rrText + "│ Profit: " + profitText;
+      CreateLabel(m_prefix + "TradeDir", tradeLine, x, y, dirColor, fs, false);
+      y += m_lineHeight;
    }
    else
    {
-      // No trade signal or position
-      CreateLabel(m_prefix + "TradeHold", "│   STATUS: ● HOLDING / NO POSITION", x, y, clrGray, fs, false);
+      string tradeLine = "│ ● HOLDING / NO POSITION │ LOT: 0.00 │ R:R: 0.00 │ Profit: 0.0 pips";
+      CreateLabel(m_prefix + "TradeHold", tradeLine, x, y, clrGray, fs, false);
       y += m_lineHeight;
-      CreateLabel(m_prefix + "TradeZero", "│   ENTRY: 0.00000      SL: 0.00000      TP: 0.00000", x, y, clrGray, fs, false);
-      y += m_lineHeight;
-      CreateLabel(m_prefix + "TradeZero2", "│   PROFIT: 0.0 pips", x, y, clrGray, fs, false);
    }
    y += m_lineHeight + 1;
    
    CreateLabel(m_prefix + "BottomLine", "└──────────────────────────────────────────────────────┘", x, y, clrGray, 8, false);
    
-   LOG_DEBUG("✅ Dashboard update complete (ENHANCED BOOST + ACTUAL POSITIONS)", g_dashboardDebugMode);
+   LOG_DEBUG("✅ Dashboard update complete (COMPACT LAYOUT)", g_dashboardDebugMode);
    LOG_DEBUG("=== DASHBOARD UPDATE END ===", g_dashboardDebugMode);
 }
