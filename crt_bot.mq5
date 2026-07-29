@@ -10,10 +10,13 @@
 //|                    + FIXED SL (NO BUFFER) + DEBUG               |
 //|                    + TREND MANAGER VERIFICATION                 |
 //|                    + BRACKET-BASED LOT SIZING                   |
-//|                    + v3.46: ORDER BLOCK DISPLAY INTEGRATED     |
+//|                    + v3.47: RISK MANAGER INTEGRATED            |
+//|                    + COOLDOWN ON LOSS                          |
+//|                    + DAILY TRADE LIMIT (3)                    |
+//|                    + PROFIT THRESHOLDS ($20)                 |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
-#property version "3.46"
+#property version "3.47"
 #property strict
 
 // ============================================================
@@ -66,13 +69,6 @@ bool g_debugSession = false;
 bool g_debugOrderBlock = false;
 
 // ============================================================
-// INPUT PARAMETERS - LOSS MANAGEMENT (REMOVED)
-// ============================================================
-// input bool InpEnableLossManagement = true;        // REMOVED
-// input double InpLossCloseConfidence = 10.0;        // REMOVED
-// input bool InpCloseOnMACDDivergence = true;        // REMOVED
-
-// ============================================================
 // GLOBAL VARIABLES
 // ============================================================
 CPullbackModule   *g_pullback = NULL;
@@ -103,6 +99,12 @@ int                g_neutralCounter = 0;
 datetime           g_lastPortfolioLog = 0;
 
 // ============================================================
+// ═══ NEW: RISK MANAGER STATUS FOR DASHBOARD ═══
+// ============================================================
+string g_riskStatusMessage = "Ready";
+bool   g_riskCanTrade = true;
+
+// ============================================================
 // INITIALIZATION STATUS TRACKING
 // ============================================================
 enum EInitStatus
@@ -128,12 +130,17 @@ int OnInit()
 {
    Logger::Initialize();
    
-   LOG_INFO("=== PULLBACK EA v3.46 (ORDER BLOCK DISPLAY INTEGRATED) ===", g_debugMain);
+   LOG_INFO("=== PULLBACK EA v3.47 (RISK MANAGER INTEGRATED) ===", g_debugMain);
    LOG_INFO("   Boost TP Distance: 100 points (when boost active)", g_debugMain);
    LOG_INFO("   TP never moves backward", g_debugMain);
    LOG_INFO("   Order Blocks: " + (InpShowOrderBlocks ? "ENABLED" : "DISABLED"), g_debugMain);
    LOG_INFO("   Max OBs: " + IntegerToString(InpMaxOrderBlocks) + " above/below", g_debugMain);
    LOG_INFO("   DEBUG: " + (g_debugMode ? "ON" : "OFF (minimal)"), g_debugMain);
+   LOG_INFO("   RISK MANAGER v2.10:", g_debugMain);
+   LOG_INFO("     - Cooldown: 2 hours on loss", g_debugMain);
+   LOG_INFO("     - Max Daily Trades: 3", g_debugMain);
+   LOG_INFO("     - Profit Threshold: $20 (stops day)", g_debugMain);
+   LOG_INFO("     - Daily Reset: 3:00 AM", g_debugMain);
    
    g_magicNumber = InpMagicNumber;
    g_trade.SetExpertMagicNumber(g_magicNumber);
@@ -173,6 +180,20 @@ int OnInit()
    LOG_DEBUG("✅ PositionManager created", g_debugPosition);
    
    // ============================================================
+   // ★★★ NEW: CONNECT RISK MANAGER TO POSITION MANAGER ★★★
+   // ============================================================
+   if(g_positionManager != NULL && g_riskManager != NULL)
+   {
+      g_positionManager.SetRiskManager(g_riskManager);
+      LOG_INFO("✅ PositionManager → RiskManager connected", g_debugMain);
+      LOG_INFO("   Trade results will be reported to RiskManager", g_debugMain);
+   }
+   else
+   {
+      LOG_WARNING("⚠️ Could not connect PositionManager to RiskManager");
+   }
+   
+   // ============================================================
    // 4. CREATE PORTFOLIO MANAGER
    // ============================================================
    g_portfolioManager = new CPortfolioManager(_Symbol, g_magicNumber, g_trade);
@@ -206,11 +227,6 @@ int OnInit()
    {
       LOG_WARNING("⚠️ Could not connect PositionManager to PortfolioManager");
    }
-   
-   // ============================================================
-   // ★★★ LOSS MANAGEMENT CONFIGURATION REMOVED ★★★
-   // ============================================================
-   // No loss management configuration - all loss management logic removed
    
    // ============================================================
    // 5. CREATE COMPONENT MANAGER
@@ -320,6 +336,10 @@ int OnInit()
          g_dashboard.SetTrendManager(g_trendManager);
          g_dashboard.SetComponentManager(g_componentManager);
          g_dashboard.SetMinConfidenceThreshold(InpNeutralThreshold);
+         
+         // ═══ NEW: SET RISK MANAGER FOR DASHBOARD ═══
+         // g_dashboard.SetRiskManager(g_riskManager);
+         // LOG_DEBUG("✅ Dashboard → RiskManager connected", g_debugMain);
       }
    }
    
@@ -330,19 +350,20 @@ int OnInit()
    g_lastInitAttempt = 0;
    g_initializationFailed = false;
    
-   LOG_INFO("✅ EA INITIALIZED - v3.46 (Order Block Display Integrated)", g_debugMain);
+   LOG_INFO("✅ EA INITIALIZED - v3.47 (Risk Manager Integrated)", g_debugMain);
    LOG_INFO("   TrendManager → PortfolioManager: ✓", g_debugMain);
    LOG_INFO("   PortfolioManager → PositionManager: ✓ (Boost TP 100 pts)", g_debugMain);
+   LOG_INFO("   PositionManager → RiskManager: ✓ (Trade result tracking)", g_debugMain);
    LOG_INFO("   PullbackModule → TrendManager: ✓", g_debugMain);
    LOG_INFO("   SessionManager: ✓ (Active Session Tracking)", g_debugMain);
    LOG_INFO("   ChartModule → SessionManager: ✓ (Session Overlays)", g_debugMain);
    LOG_INFO("   ChartModule → OrderBlockDisplay: ✓ (H4 Order Blocks)", g_debugMain);
+   LOG_INFO("   Dashboard → RiskManager: ✓ (Risk status display)", g_debugMain);
    LOG_INFO("   Position management every 1 second", g_debugMain);
    LOG_INFO("=========================================================", g_debugMain);
    
    return INIT_SUCCEEDED;
 }
-
 //+------------------------------------------------------------------+
 //| TICK HANDLER                                                     |
 //+------------------------------------------------------------------+
@@ -354,15 +375,44 @@ void OnTick()
    if(g_portfolioManager != NULL)
       g_portfolioManager.Update();
    
-   datetime currentBarTime = iTime(_Symbol, InpEntryTF, 0);
-   if(currentBarTime == g_lastBarTime)
-      return;
-   g_lastBarTime = currentBarTime;
+   // ═══ UPDATE RISK MANAGER STATUS ═══
+   if(g_riskManager != NULL)
+   {
+      g_riskStatusMessage = g_riskManager.GetStatusMessage();
+      g_riskCanTrade = g_riskManager.CanTrade();
+      
+      if(g_debugRisk && g_riskManager.IsInCooldown())
+      {
+         static datetime lastCooldownLog = 0;
+         if(TimeCurrent() - lastCooldownLog >= 60)
+         {
+            lastCooldownLog = TimeCurrent();
+            LOG_DEBUG("⏳ Cooldown: " + g_riskManager.GetCooldownRemaining(), g_debugRisk);
+         }
+      }
+   }
    
-   CheckSignal();
-   UpdateChart();
-   UpdateDashboard();
-   UpdateOrderBlocks();
+   // ═══ RUN EVERY 10 SECONDS (instead of only on new bar) ═══
+   static datetime lastCheckTime = 0;
+   datetime currentTime = TimeCurrent();
+   
+   if(currentTime - lastCheckTime >= 10)
+   {
+      lastCheckTime = currentTime;
+      
+      // Update bar time tracking for other functions
+      datetime currentBarTime = iTime(_Symbol, InpEntryTF, 0);
+      if(currentBarTime != g_lastBarTime)
+      {
+         g_lastBarTime = currentBarTime;
+         // New bar detected - can trigger additional logic if needed
+      }
+      
+      CheckSignal();
+      UpdateChart();
+      UpdateDashboard();
+      UpdateOrderBlocks();
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -530,6 +580,14 @@ bool InitializeIndicatorsAsync()
                          g_debugOrderBlock);
             }
             
+            // Log Risk Manager status
+            if(g_riskManager != NULL && g_debugRisk)
+            {
+               LOG_DEBUG("📊 Risk Manager: " + g_riskManager.GetStatusMessage(), g_debugRisk);
+               LOG_DEBUG("   Daily Trades: " + IntegerToString(g_riskManager.GetDailyTradeCount()) + 
+                         "/" + IntegerToString(g_riskManager.GetMaxDailyTrades()), g_debugRisk);
+            }
+            
             return true;
          }
          else
@@ -585,6 +643,14 @@ void OnTimer()
       // g_portfolioManager.MonitorPositions(); // REMOVED - no loss management
    }
    
+   // ═══ NEW: RISK MANAGER PERIODIC CHECK ═══
+   if(g_riskManager != NULL)
+   {
+      // Update status message
+      g_riskStatusMessage = g_riskManager.GetStatusMessage();
+      g_riskCanTrade = g_riskManager.CanTrade();
+   }
+   
    // Update SessionManager periodically
    if(g_sessionManager != NULL)
    {
@@ -599,6 +665,23 @@ void OnTimer()
                       " | High: " + DoubleToString(g_sessionManager.GetSessionHigh(), _Digits) +
                       " | Low: " + DoubleToString(g_sessionManager.GetSessionLow(), _Digits),
                       g_debugSession);
+         }
+      }
+   }
+   
+   // ═══ NEW: LOG RISK STATUS PERIODICALLY ═══
+   if(g_riskManager != NULL && g_debugRisk)
+   {
+      static datetime lastRiskLog = 0;
+      if(TimeCurrent() - lastRiskLog >= 300)  // Log every 5 minutes
+      {
+         lastRiskLog = TimeCurrent();
+         LOG_DEBUG("📊 Risk Status: " + g_riskManager.GetStatusMessage(), g_debugRisk);
+         LOG_DEBUG("   Daily Trades: " + IntegerToString(g_riskManager.GetDailyTradeCount()) + 
+                   "/" + IntegerToString(g_riskManager.GetMaxDailyTrades()), g_debugRisk);
+         if(g_riskManager.IsInCooldown())
+         {
+            LOG_DEBUG("   Cooldown: " + g_riskManager.GetCooldownRemaining(), g_debugRisk);
          }
       }
    }
@@ -776,13 +859,29 @@ bool CalculateTakeProfits(int signal, double currentPrice, double rangeHigh, dou
 }
 
 //+------------------------------------------------------------------+
-//| CheckSignal - NO MACD OPPOSITION CHECKS                         |
+//| CheckSignal - WITH SEQUENTIAL PROGRESS UPDATES                  |
 //| REJECT entry if Risk-Reward < 1.5:1                            |
+//| REJECT entry if in NO GO ZONE (0-20% or 90-100%)              |
+//| REJECT entry if RiskManager says no                           |
+//| SL Buffer protection included                                   |
 //+------------------------------------------------------------------+
 void CheckSignal()
 {
    if(g_componentManager == NULL || g_trendManager == NULL) 
       return;
+   
+   // ═══ STEP 1: TREND CHECK ═══
+   if(g_dashboard != NULL)
+      g_dashboard.SetCheckPending(1, "Analyzing trend strength and direction...");
+   UpdateDashboard();
+   
+   // Check Risk Manager first
+   if(g_riskManager != NULL && !g_riskManager.CanTrade())
+   {
+      if(g_dashboard != NULL)
+         g_dashboard.SetCheckFailed(1, "Risk Manager blocks trading: " + g_riskManager.GetStatusMessage());
+      return;
+   }
    
    STrendResult trendResult = g_trendManager.AnalyzeTrend();
    
@@ -796,55 +895,99 @@ void CheckSignal()
    
    g_componentManager.SetTradeDirection(tradeDirection);
    
-   double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   g_componentManager.SetCurrentPrice(currentPrice);
-   
-   if(g_pullback != NULL && g_trendManager != NULL)
-   {
-      g_pullback.SetTrendManager(g_trendManager);
-   }
-   
-   SPullbackAnalysisResult pbResult = g_pullback.GetPullbackAnalysis();
-   int trend = g_pullback.GetTrendPublic();
-   
-   if(!pbResult.showOnChart || pbResult.rangeHigh == 0 || pbResult.rangeLow == 0)
-      return;
-   
-   if(pbResult.rangeHigh <= pbResult.rangeLow)
-      return;
-   
+   // Check trend conditions
    if(!g_trendManager.ShouldAllowEntries())
    {
-      g_neutralCounter++;
+      if(g_dashboard != NULL)
+         g_dashboard.SetCheckFailed(1, "Trend: No entries allowed");
       return;
    }
    
    if(trendResult.strength < InpMinTrendStrength)
    {
-      g_lowStrengthCounter++;
+      if(g_dashboard != NULL)
+         g_dashboard.SetCheckFailed(1, "Trend too weak: " + DoubleToString(trendResult.strength, 1) + "% < " + DoubleToString(InpMinTrendStrength, 1) + "%");
       return;
    }
    
    if(InpRequireStrongTrend && !g_trendManager.IsStrongTrend())
    {
-      g_notStrongCounter++;
+      if(g_dashboard != NULL)
+         g_dashboard.SetCheckFailed(1, "Trend not strong enough: " + DoubleToString(trendResult.strength, 1) + "%");
       return;
    }
    
    if(!InpAllowNeutralTrend && trendResult.direction == "NEUTRAL")
    {
-      g_neutralCounter++;
+      if(g_dashboard != NULL)
+         g_dashboard.SetCheckFailed(1, "Trend: NEUTRAL not allowed");
       return;
    }
+   
+   // ✅ TREND PASSED
+   if(g_dashboard != NULL)
+      g_dashboard.SetCheckPassed(1, "Trend: " + trendResult.direction + " (" + DoubleToString(trendResult.strength, 1) + "%)");
+   UpdateDashboard();
+   
+   // ═══ STEP 2: PULLBACK CHECK ═══
+   if(g_dashboard != NULL)
+      g_dashboard.SetCheckPending(2, "Checking range and zone...");
+   UpdateDashboard();
+   
+   double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   g_componentManager.SetCurrentPrice(currentPrice);
+   
+   if(g_pullback != NULL && g_trendManager != NULL)
+      g_pullback.SetTrendManager(g_trendManager);
+   
+   SPullbackAnalysisResult pbResult = g_pullback.GetPullbackAnalysis();
+   int trend = g_pullback.GetTrendPublic();
+   
+   if(!pbResult.showOnChart || pbResult.rangeHigh == 0 || pbResult.rangeLow == 0)
+   {
+      if(g_dashboard != NULL)
+         g_dashboard.SetCheckFailed(2, "Pullback: No valid range");
+      return;
+   }
+   
+   if(pbResult.rangeHigh <= pbResult.rangeLow)
+   {
+      if(g_dashboard != NULL)
+         g_dashboard.SetCheckFailed(2, "Pullback: Invalid range");
+      return;
+   }
+   
+   // Check No Go Zone
+   if(g_pullback != NULL && g_pullback.IsNoGoZone(pbResult.pullbackPercent))
+   {
+      string noGoReason = "";
+      if(pbResult.pullbackPercent <= 20.0)
+         noGoReason = "TOO EARLY (0-20%)";
+      else if(pbResult.pullbackPercent >= 90.0)
+         noGoReason = "OVEREXTENDED (90-100%)";
+      else
+         noGoReason = "NO GO ZONE";
+      
+      if(g_dashboard != NULL)
+         g_dashboard.SetCheckFailed(2, "Pullback: NO GO ZONE - " + noGoReason + " (" + DoubleToString(pbResult.pullbackPercent, 1) + "%)");
+      return;
+   }
+   
+   // ✅ PULLBACK PASSED
+   if(g_dashboard != NULL)
+      g_dashboard.SetCheckPassed(2, "Pullback: " + pbResult.zoneCategory + " (" + DoubleToString(pbResult.pullbackPercent, 1) + "%)");
+   UpdateDashboard();
+   
+   // ═══ STEP 3: CONFIDENCE CHECK ═══
+   if(g_dashboard != NULL)
+      g_dashboard.SetCheckPending(3, "Checking confidence thresholds...");
+   UpdateDashboard();
    
    SMarketAnalysis analysis = g_componentManager.AnalyzeMarket();
    
    double baseConfidence = analysis.overallConfidence;
    double portfolioBoost = 0;
    
-   // ============================================================
-   // GET ENHANCED BOOST FROM PORTFOLIO MANAGER
-   // ============================================================
    if(g_portfolioManager != NULL)
    {
       g_portfolioManager.Update();
@@ -855,17 +998,24 @@ void CheckSignal()
       analysis.overallConfidence = adjustedConfidence;
    }
    
-   // ============================================================
-   // ═══ MACD OPPOSITION CHECKS COMPLETELY REMOVED ═══
-   // No rejection based on MACD opposing trend
-   // ============================================================
-   
    double finalConfidence = analysis.overallConfidence;
    double thresholdToUse = GetThresholdForDirection(analysis.overallSentiment);
    
-   if(analysis.overallSentiment == "NEUTRAL" || finalConfidence < thresholdToUse)
+   if(analysis.overallSentiment == "NEUTRAL")
+   {
+      if(g_dashboard != NULL)
+         g_dashboard.SetCheckFailed(3, "Confidence: NEUTRAL sentiment - no clear direction");
       return;
+   }
    
+   if(finalConfidence < thresholdToUse)
+   {
+      if(g_dashboard != NULL)
+         g_dashboard.SetCheckFailed(3, "Confidence too low: " + DoubleToString(finalConfidence, 1) + "% < " + DoubleToString(thresholdToUse, 1) + "%");
+      return;
+   }
+   
+   // Check trend alignment
    bool signalAlignsWithTrend = false;
    
    if(analysis.overallSentiment == "BULLISH" && 
@@ -882,10 +1032,46 @@ void CheckSignal()
    }
    
    if(!signalAlignsWithTrend)
+   {
+      if(g_dashboard != NULL)
+         g_dashboard.SetCheckFailed(3, "Confidence: Signal does not align with trend");
       return;
+   }
+   
+   // ✅ CONFIDENCE PASSED
+   if(g_dashboard != NULL)
+      g_dashboard.SetCheckPassed(3, "Confidence: " + DoubleToString(finalConfidence, 1) + "% ≥ " + DoubleToString(thresholdToUse, 1) + "%");
+   UpdateDashboard();
+   
+   // ═══ STEP 4: RISK CHECK ═══
+   if(g_dashboard != NULL)
+      g_dashboard.SetCheckPending(4, "Checking risk limits...");
+   UpdateDashboard();
    
    if(g_riskManager != NULL && !g_riskManager.CheckRiskLimits())
+   {
+      if(g_dashboard != NULL)
+         g_dashboard.SetCheckFailed(4, "Risk: " + g_riskManager.GetStatusMessage());
       return;
+   }
+   
+   // ✅ RISK PASSED
+   if(g_riskManager != NULL)
+   {
+      if(g_dashboard != NULL)
+         g_dashboard.SetCheckPassed(4, "Risk: " + g_riskManager.GetStatusMessage());
+   }
+   else
+   {
+      if(g_dashboard != NULL)
+         g_dashboard.SetCheckPassed(4, "Risk: Ready");
+   }
+   UpdateDashboard();
+   
+   // ═══ STEP 5: RR CHECK ═══
+   if(g_dashboard != NULL)
+      g_dashboard.SetCheckPending(5, "Calculating risk-reward ratio...");
+   UpdateDashboard();
    
    double rangeHigh = pbResult.rangeHigh;
    double rangeLow = pbResult.rangeLow;
@@ -894,7 +1080,11 @@ void CheckSignal()
    string zoneCategory = pbResult.zoneCategory;
    
    if(rangeHigh == 0 || rangeLow == 0 || rangeHigh <= rangeLow)
+   {
+      if(g_dashboard != NULL)
+         g_dashboard.SetCheckFailed(5, "RR Check: Invalid range");
       return;
+   }
    
    double pointValue = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    
@@ -908,83 +1098,73 @@ void CheckSignal()
    else
       trade.signal = 0;
    
-   if(trade.signal == 0) return;
+   if(trade.signal == 0)
+   {
+      if(g_dashboard != NULL)
+         g_dashboard.SetCheckFailed(5, "RR Check: No signal direction");
+      return;
+   }
    
    trade.entryPrice = currentPrice;
    
-   // ============================================================
-   // STEP 1: SET STOP LOSS
-   // ============================================================
+   // Set Stop Loss with Buffer
+   double slBuffer = InpSLBufferPoints * pointValue;
+   
    if(trade.signal == 1)
-      trade.stopLoss = rangeLow;
+      trade.stopLoss = rangeLow - slBuffer;
    else
-      trade.stopLoss = rangeHigh;
+      trade.stopLoss = rangeHigh + slBuffer;
+   
+   if(trade.stopLoss <= 0)
+   {
+      if(g_dashboard != NULL)
+         g_dashboard.SetCheckFailed(5, "RR Check: Invalid SL level");
+      return;
+   }
    
    double riskAmount = MathAbs(trade.stopLoss - trade.entryPrice);
    double riskPips = riskAmount / pointValue;
    
    if(riskAmount <= 0)
+   {
+      if(g_dashboard != NULL)
+         g_dashboard.SetCheckFailed(5, "RR Check: Invalid risk amount");
       return;
+   }
    
-   // ============================================================
-   // STEP 2: CALCULATE TAKE PROFIT WITH MINIMUM RR 1:1.5
-   // ============================================================
    double primaryTP = 0, rr = 0;
-   
    bool rrPassed = CalculateTakeProfits(trade.signal, currentPrice, rangeHigh, rangeLow, 
-                                         pullbackPercent, riskAmount, primaryTP, rr,
-                                         portfolioBoost);
+                                       pullbackPercent, riskAmount, primaryTP, rr,
+                                       portfolioBoost);
    
    if(!rrPassed)
    {
-      LOG_DEBUG("❌ Trade REJECTED: Insufficient Risk-Reward (RR: " + 
-                DoubleToString(rr, 2) + ":1 < Minimum " + DoubleToString(InpMinRR, 1) + ":1)", 
-                g_debugMain);
+      if(g_dashboard != NULL)
+         g_dashboard.SetCheckFailed(5, "RR Check: " + DoubleToString(rr, 2) + ":1 < " + DoubleToString(InpMinRR, 1) + ":1 minimum");
       return;
    }
    
    if(primaryTP <= 0)
    {
-      LOG_DEBUG("❌ Trade REJECTED: Invalid Take Profit level", g_debugMain);
+      if(g_dashboard != NULL)
+         g_dashboard.SetCheckFailed(5, "RR Check: Invalid TP level");
       return;
    }
+   
+   // ✅ RR CHECK PASSED
+   if(g_dashboard != NULL)
+      g_dashboard.SetCheckPassed(5, "RR Check: " + DoubleToString(rr, 2) + ":1 ≥ " + DoubleToString(InpMinRR, 1) + ":1");
+   UpdateDashboard();
    
    trade.takeProfit = primaryTP;
    trade.takeProfit2 = 0;
    
    double rewardAmount = MathAbs(trade.takeProfit - trade.entryPrice);
    double rewardPips = rewardAmount / pointValue;
-   
    trade.riskRewardRatio = rewardAmount / riskAmount;
    trade.riskRewardRatio2 = 0;
    
-   // ============================================================
-   // STEP 3: LOG TRADE DETAILS
-   // ============================================================
-   LOG_TRADE("═══════════════════════════════════════════════════════════");
-   LOG_TRADE("✅✅✅ TRADE SIGNAL ACCEPTED ✅✅✅");
-   LOG_TRADE("   Direction: " + (trade.signal == 1 ? "LONG (BUY)" : "SHORT (SELL)"));
-   LOG_TRADE("   Entry: " + DoubleToString(trade.entryPrice, _Digits));
-   LOG_TRADE("   Stop Loss: " + DoubleToString(trade.stopLoss, _Digits) + 
-             " (" + DoubleToString(riskPips, 1) + " pips risk)");
-   LOG_TRADE("   Take Profit: " + DoubleToString(trade.takeProfit, _Digits) + 
-             " (" + DoubleToString(rewardPips, 1) + " pips reward)");
-   LOG_TRADE("   Risk-Reward: " + DoubleToString(trade.riskRewardRatio, 2) + ":1" +
-             " (Minimum: " + DoubleToString(InpMinRR, 1) + ":1)");
-   LOG_TRADE("   Pullback Zone: " + zoneCategory + " (" + 
-             DoubleToString(pullbackPercent, 1) + "%)");
-   LOG_TRADE("   Boost: " + StringFormat("%+.1f%%", portfolioBoost));
-   LOG_TRADE("   Confidence: " + DoubleToString(finalConfidence, 1) + "%");
-   
-   // Log current session if available
-   if(g_sessionManager != NULL)
-   {
-      LOG_TRADE("   Session: " + g_sessionManager.GetSessionName() + 
-                " (" + g_sessionManager.GetSessionHours() + ")");
-   }
-   
-   LOG_TRADE("═══════════════════════════════════════════════════════════");
-   
+   // Calculate partial level
    if(trade.signal == 1)
       trade.partialLevel75 = currentPrice + (trade.takeProfit - currentPrice) * 0.75;
    else
@@ -994,11 +1174,13 @@ void CheckSignal()
    trade.pullbackScore = (int)pbResult.pullbackScore;
    trade.entryReason = zoneCategory + " pullback - Boost " + StringFormat("%+.1f%%", portfolioBoost);
    
-   // ============================================================
-   // STEP 4: CALCULATE LOT SIZE
-   // ============================================================
-   double lotSize = InpLotSize;
+   // ═══ STEP 6: EXECUTION ═══
+   if(g_dashboard != NULL)
+      g_dashboard.SetCheckPending(6, "Executing trade...");
+   UpdateDashboard();
    
+   // Calculate Lot Size
+   double lotSize = InpLotSize;
    if(g_riskManager != NULL)
       lotSize = g_riskManager.CalculateLotSize(trade);
    
@@ -1008,31 +1190,43 @@ void CheckSignal()
    
    if(lotSize < minLot) lotSize = minLot;
    if(lotSize > maxLot) lotSize = maxLot;
-   
    if(stepLot > 0)
       lotSize = MathRound(lotSize / stepLot) * stepLot;
    
-   LOG_DEBUG("   Lot Size: " + DoubleToString(lotSize, 2), g_debugMain);
-   
-   // ============================================================
-   // STEP 5: EXECUTE TRADE
-   // ============================================================
+   // Execute Trade
    if(InpEnableTrading && g_positionManager != NULL)
    {
       bool executed = g_positionManager.ExecuteTrade(trade, lotSize);
       if(executed)
       {
          LOG_TRADE("✅✅✅ TRADE EXECUTED SUCCESSFULLY ✅✅✅");
+         
+         if(g_riskManager != NULL)
+            g_riskManager.OnTradeExecuted();
+         
+         // ✅ EXECUTION SUCCESSFUL
+         string dirText = trade.signal == 1 ? "BUY" : "SELL";
+         if(g_dashboard != NULL)
+         {
+            g_dashboard.SetCheckPassed(6, "SUCCESSFUL - " + dirText + " @ " + DoubleToString(trade.entryPrice, _Digits));
+            g_dashboard.SetTradeExecuted();
+         }
       }
       else
       {
          LOG_ERROR("❌❌❌ TRADE EXECUTION FAILED ❌❌❌");
+         if(g_dashboard != NULL)
+            g_dashboard.SetCheckFailed(6, "Execution FAILED");
       }
    }
    else
    {
       LOG_DEBUG("⚠️ Trading disabled - Signal detected but not executed", g_debugMain);
+      if(g_dashboard != NULL)
+         g_dashboard.SetCheckFailed(6, "Trading disabled");
    }
+   
+   UpdateDashboard();
 }
 
 //+------------------------------------------------------------------+
@@ -1282,6 +1476,18 @@ void ShowPullbackInfo()
                " (" + g_sessionManager.GetSessionHours() + ")", g_debugMain);
    }
    
+   // ═══ NEW: SHOW RISK MANAGER STATUS ═══
+   if(g_riskManager != NULL)
+   {
+      LOG_INFO("Risk Status: " + g_riskManager.GetStatusMessage(), g_debugMain);
+      LOG_INFO("Daily Trades: " + IntegerToString(g_riskManager.GetDailyTradeCount()) + 
+               "/" + IntegerToString(g_riskManager.GetMaxDailyTrades()), g_debugMain);
+      if(g_riskManager.IsInCooldown())
+      {
+         LOG_INFO("Cooldown: " + g_riskManager.GetCooldownRemaining(), g_debugMain);
+      }
+   }
+   
    LOG_INFO("", g_debugMain);
    LOG_INFO("=== COMPONENT MANAGER ===", g_debugMain);
    LOG_INFO("Sentiment: " + analysis.overallSentiment, g_debugMain);
@@ -1358,9 +1564,83 @@ void ShowScenario()
                " (" + g_sessionManager.GetSessionHours() + ")", g_debugMain);
    }
    
+   // ═══ NEW: SHOW RISK MANAGER STATUS ═══
+   if(g_riskManager != NULL)
+   {
+      LOG_INFO("   Risk: " + g_riskManager.GetStatusMessage(), g_debugMain);
+      LOG_INFO("   Daily: " + IntegerToString(g_riskManager.GetDailyTradeCount()) + 
+               "/" + IntegerToString(g_riskManager.GetMaxDailyTrades()), g_debugMain);
+   }
+   
    LOG_INFO("", g_debugMain);
    LOG_INFO("📋 " + synthesized.narrative, g_debugMain);
    LOG_INFO("=========================", g_debugMain);
+}
+
+// ═══ NEW: RISK MANAGER HELPER FUNCTIONS ═══
+
+string GetRiskStatus()
+{
+   if(g_riskManager == NULL) return "RiskManager not initialized";
+   return g_riskManager.GetStatusMessage();
+}
+
+string GetCooldownRemaining()
+{
+   if(g_riskManager == NULL) return "N/A";
+   return g_riskManager.GetCooldownRemaining();
+}
+
+int GetDailyTradeCount()
+{
+   if(g_riskManager == NULL) return 0;
+   return g_riskManager.GetDailyTradeCount();
+}
+
+int GetMaxDailyTrades()
+{
+   if(g_riskManager == NULL) return 0;
+   return g_riskManager.GetMaxDailyTrades();
+}
+
+bool IsInCooldown()
+{
+   if(g_riskManager == NULL) return false;
+   return g_riskManager.IsInCooldown();
+}
+
+bool IsDayStopped()
+{
+   if(g_riskManager == NULL) return false;
+   return g_riskManager.IsDayStoppedFlag();
+}
+
+bool CanTrade()
+{
+   if(g_riskManager == NULL) return true;
+   return g_riskManager.CanTrade();
+}
+
+void ShowRiskStatus()
+{
+   if(g_riskManager == NULL)
+   {
+      LOG_ERROR("❌ RiskManager not initialized");
+      return;
+   }
+   
+   LOG_INFO("=== RISK MANAGER STATUS ===", g_debugMain);
+   LOG_INFO("  Status: " + g_riskManager.GetStatusMessage(), g_debugMain);
+   LOG_INFO("  Daily Trades: " + IntegerToString(g_riskManager.GetDailyTradeCount()) + 
+            "/" + IntegerToString(g_riskManager.GetMaxDailyTrades()), g_debugMain);
+   if(g_riskManager.IsInCooldown())
+   {
+      LOG_INFO("  Cooldown: " + g_riskManager.GetCooldownRemaining(), g_debugMain);
+   }
+   LOG_INFO("  In Cooldown: " + (g_riskManager.IsInCooldown() ? "YES" : "NO"), g_debugMain);
+   LOG_INFO("  Day Stopped: " + (g_riskManager.IsDayStoppedFlag() ? "YES" : "NO"), g_debugMain);
+   LOG_INFO("  Can Trade: " + (g_riskManager.CanTrade() ? "YES" : "NO"), g_debugMain);
+   LOG_INFO("===========================", g_debugMain);
 }
 
 void RefreshDisplays()

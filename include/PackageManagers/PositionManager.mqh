@@ -1,22 +1,25 @@
 //+------------------------------------------------------------------+
 //|                     PositionManager.mqh                          |
 //|              WITH PARTIAL CLOSE AT BREAKEVEN                    |
-//|              v3.4 - REMOVED LOSS CLOSE CONFIDENCE              |
-//|              ONLY logs SL movements and ApplyTrailingStop calls |
+//|              v3.5 - RISK MANAGER INTEGRATION                   |
+//|              Reports trade results to RiskManager              |
+//|              SL MOVEMENT LOGGING CAN BE TOGGLED               |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
-#property version "3.4"
+#property version "3.5"
 
 #include "../Headers/Structures.mqh"
 #include "../Headers/Inputs.mqh"
 #include "../Utils/Logger.mqh"
 #include "PortfolioManager.mqh"
+#include "Riskmanager.mqh"
 #include <Trade\Trade.mqh>
 
 //+------------------------------------------------------------------+
-//| GLOBAL DEBUG TOGGLE - ONLY FOR SL TRACING                      |
+//| GLOBAL DEBUG TOGGLE - SL MOVEMENT LOGGING                      |
 //+------------------------------------------------------------------+
-bool g_debugPositionManager = true;  // SET TO TRUE TO TRACE SL MOVEMENTS
+bool g_debugPositionManager = false;      // SET TO TRUE TO TRACE SL MOVEMENTS
+bool g_logSLMovements = false;            // ═══ NEW: SEPARATE TOGGLE FOR SL LOGS ═══
 
 //+------------------------------------------------------------------+
 //| Position Manager Class - With Boost-Aware TP Trailing          |
@@ -29,6 +32,7 @@ private:
    int               m_maxSlippage;
    CTrade           *m_trade;
    CPortfolioManager *m_portfolioManager;
+   CRiskManager     *m_riskManager;        // ═══ NEW: RISK MANAGER ═══
    PositionState    m_states[];
    
    // Boost-aware TP trailing settings
@@ -55,7 +59,13 @@ private:
    double GetBoostTPDistance();
    double GetCurrentBoost() const { return m_currentBoost; }
    
-   // ═══ DEBUG: ONLY LOG SL MOVEMENTS ═══
+   // ═══ NEW: TRADE CLOSE HANDLING ═══
+   void OnPositionClosed(ulong ticket, double profit);
+   void CheckAndReportClosedPositions();
+   datetime m_lastPositionCheck;
+   
+   // ═══ SL MOVEMENT LOGGING - NOW WITH TOGGLE ═══
+   bool m_logSLMovements;                  // Instance-level toggle
    void LogSLMovement(ulong ticket, string source, double oldSL, double newSL, double profitPips, string reason);
    
 public:
@@ -66,6 +76,18 @@ public:
    { 
       m_portfolioManager = portfolioManager; 
    }
+   
+   // ═══ NEW: SET RISK MANAGER ═══
+   void SetRiskManager(CRiskManager* riskManager)
+   {
+      m_riskManager = riskManager;
+   }
+   
+   // ═══ NEW: TOGGLE SL MOVEMENT LOGGING ═══
+   void SetLogSLMovements(bool enable) { m_logSLMovements = enable; }
+   bool GetLogSLMovements() const { return m_logSLMovements; }
+   static void SetGlobalLogSLMovements(bool enable) { g_logSLMovements = enable; }
+   static bool GetGlobalLogSLMovements() { return g_logSLMovements; }
    
    void SetLossManagementEnabled(bool enable) { m_lossManagementEnabled = enable; }
    bool IsLossManagementEnabled() const { return m_lossManagementEnabled; }
@@ -106,17 +128,19 @@ public:
 //+------------------------------------------------------------------+
 CPositionManager::CPositionManager(string symbol, int magicNumber, CTrade &trade)
 {
-   // NO LOGGING - Constructor
    m_symbol = symbol;
    m_magicNumber = magicNumber;
    m_trade = &trade;
    m_maxSlippage = InpMaxSlippage;
    m_portfolioManager = NULL;
+   m_riskManager = NULL;
    m_currentBoost = 0;
    m_lastBoostCheck = 0;
    m_boostCheckInterval = 2;
    m_boostTPDistance = 100.0;
    m_lossManagementEnabled = true;
+   m_lastPositionCheck = 0;
+   m_logSLMovements = false;      // ═══ DEFAULT: SL LOGGING OFF ═══
    ArrayResize(m_states, 0);
 }
 
@@ -125,7 +149,7 @@ CPositionManager::CPositionManager(string symbol, int magicNumber, CTrade &trade
 //+------------------------------------------------------------------+
 CPositionManager::~CPositionManager()
 {
-   // NO LOGGING
+   // Cleanup
 }
 
 //+------------------------------------------------------------------+
@@ -278,6 +302,94 @@ bool CPositionManager::PartialClosePosition(ulong ticket, double closePercent)
 }
 
 //+------------------------------------------------------------------+
+//| ═══ ON POSITION CLOSED - REPORT TO RISK MANAGER ═══           |
+//+------------------------------------------------------------------+
+void CPositionManager::OnPositionClosed(ulong ticket, double profit)
+{
+   LOG_DEBUG("📊 Position #" + IntegerToString(ticket) + " closed with profit: $" + 
+             DoubleToString(profit, 2), g_debugPositionManager);
+   
+   RemoveState(ticket);
+   
+   if(m_riskManager != NULL)
+   {
+      LOG_DEBUG("📊 Reporting trade result to RiskManager: $" + DoubleToString(profit, 2), 
+                g_debugPositionManager);
+      m_riskManager.OnTradeClosed(profit);
+   }
+   else
+   {
+      LOG_DEBUG("⚠️ No RiskManager set - trade result not reported", g_debugPositionManager);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| ═══ CHECK AND REPORT CLOSED POSITIONS ═══                     |
+//+------------------------------------------------------------------+
+void CPositionManager::CheckAndReportClosedPositions()
+{
+   datetime now = TimeCurrent();
+   if(now - m_lastPositionCheck < 2) return;
+   m_lastPositionCheck = now;
+   
+   for(int i = ArraySize(m_states) - 1; i >= 0; i--)
+   {
+      ulong ticket = m_states[i].ticket;
+      
+      if(!PositionSelectByTicket(ticket))
+      {
+         // ═══ POSITION CLOSED - GET PROFIT FROM HISTORY ═══
+         double profit = 0;
+         
+         // Try to get profit from history
+         HistorySelect(0, TimeCurrent());
+         int totalHistory = HistoryDealsTotal();
+         
+         for(int h = totalHistory - 1; h >= 0; h--)
+         {
+            ulong historyTicket = HistoryDealGetTicket(h);
+            if(historyTicket <= 0) continue;
+            
+            // Check if this deal is related to our position
+            ulong positionId = HistoryDealGetInteger(historyTicket, DEAL_POSITION_ID);
+            if(positionId == ticket)
+            {
+               profit = HistoryDealGetDouble(historyTicket, DEAL_PROFIT);
+               LOG_DEBUG("📊 Found closed position #" + IntegerToString(ticket) + 
+                         " with profit: $" + DoubleToString(profit, 2), 
+                         g_debugPositionManager);
+               break;
+            }
+         }
+         
+         // Remove state first
+         RemoveState(ticket);
+         
+         // ═══ REPORT TO RISK MANAGER ═══
+         if(m_riskManager != NULL)
+         {
+            LOG_DEBUG("📊 Reporting closed position #" + IntegerToString(ticket) + 
+                      " to RiskManager: $" + DoubleToString(profit, 2), 
+                      g_debugPositionManager);
+            m_riskManager.OnTradeClosed(profit);
+         }
+         else
+         {
+            LOG_DEBUG("⚠️ No RiskManager set - trade result not reported", 
+                      g_debugPositionManager);
+         }
+         continue;
+      }
+      
+      if(!IsOurPosition(ticket))
+      {
+         RemoveState(ticket);
+         continue;
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
 //| Execute Trade                                                   |
 //+------------------------------------------------------------------+
 bool CPositionManager::ExecuteTrade(PrescribedTrade &signal, double lotSize)
@@ -322,6 +434,12 @@ bool CPositionManager::ExecuteTrade(PrescribedTrade &signal, double lotSize)
       if(m_portfolioManager != NULL)
       {
          m_portfolioManager.OnTradeOpened(result.order, signal.entryPrice, signal.stopLoss);
+      }
+      
+      // ═══ NOTIFY RISK MANAGER OF EXECUTION ═══
+      if(m_riskManager != NULL)
+      {
+         m_riskManager.OnTradeExecuted();
       }
       
       return true;
@@ -396,13 +514,17 @@ bool CPositionManager::HasOpenPositions()
 }
 
 //+------------------------------------------------------------------+
-//| ═══ SL MOVEMENT LOG - CRITICAL ONLY ═══                        |
+//| ═══ SL MOVEMENT LOG - NOW WITH TOGGLE ═══                     |
 //+------------------------------------------------------------------+
 void CPositionManager::LogSLMovement(ulong ticket, string source, double oldSL, double newSL, double profitPips, string reason)
 {
-   // ALWAYS SHOW THIS - Critical for debugging
+   // ═══ CHECK BOTH INSTANCE AND GLOBAL TOGGLES ═══
+   bool shouldLog = m_logSLMovements || g_logSLMovements || g_debugPositionManager;
+   
+   if(!shouldLog) return;
+   
    Print("🔍🔍🔍 SL MOVEMENT DETECTED! 🔍🔍🔍");
-   Print("   Position: #", ticket);
+   Print("   Position #", ticket);
    Print("   Source: ", source);
    Print("   Old SL: ", DoubleToString(oldSL, _Digits));
    Print("   New SL: ", DoubleToString(newSL, _Digits));
@@ -416,6 +538,9 @@ void CPositionManager::LogSLMovement(ulong ticket, string source, double oldSL, 
 //+------------------------------------------------------------------+
 void CPositionManager::ManagePositions()
 {
+   // ═══ CHECK FOR CLOSED POSITIONS FIRST ═══
+   CheckAndReportClosedPositions();
+   
    // Update boost status
    bool hasBoost = IsBoostActive();
    
@@ -512,7 +637,7 @@ void CPositionManager::ManageSinglePosition(ulong ticket)
          
          double newSL = isBuy ? openPrice + (5 * point) : openPrice - (5 * point);
          
-         // ═══ LOG BREAKEVEN SL MOVEMENT ═══
+         // ═══ LOG BREAKEVEN SL MOVEMENT (TOGGLED) ═══
          if(newSL != oldSL)
          {
             LogSLMovement(ticket, "BREAKEVEN", oldSL, newSL, profitPips, "Breakeven triggered at " + IntegerToString(InpBreakevenPips) + " pips");
@@ -560,7 +685,7 @@ void CPositionManager::ManageSinglePosition(ulong ticket)
          
          if(slMoved)
          {
-            // ═══ LOG TRAILING SL MOVEMENT ═══
+            // ═══ LOG TRAILING SL MOVEMENT (TOGGLED) ═══
             LogSLMovement(ticket, "TRAILING_STOP", currentSL, newSL, profitPips, "Trailing stop at " + IntegerToString(InpTrailingStopPips) + " pips behind price");
             
             double newTP = currentTP;
@@ -632,50 +757,36 @@ void CPositionManager::SetBreakeven(ulong ticket, bool isBuy)
    double currentTP = PositionGetDouble(POSITION_TP);
    double currentSL = PositionGetDouble(POSITION_SL);
    
-   // ═══════════════════════════════════════════════════════════
-   // ═══ USE INPUT FOR BREAKEVEN BUFFER ═══
-   // InpBreakevenBuffer is defined in Inputs.mqh
-   // Default: 50 pips (0.50 points for Gold)
-   // ═══════════════════════════════════════════════════════════
-   double bufferPoints = InpBreakevenBuffer * point;  // Convert pips to points
+   double bufferPoints = InpBreakevenBuffer * point;
    
    double breakevenSL = isBuy ? entryPrice + bufferPoints 
                                : entryPrice - bufferPoints;
    
-   // ═══════════════════════════════════════════════════════════
-   // SAFETY CHECK: Ensure SL stays on the correct side
-   // ═══════════════════════════════════════════════════════════
    double currentPrice = isBuy ? SymbolInfoDouble(m_symbol, SYMBOL_BID) 
                                 : SymbolInfoDouble(m_symbol, SYMBOL_ASK);
    
    if(isBuy)
    {
-      // BUY: breakeven SL must be BELOW current price
       if(breakevenSL >= currentPrice)
       {
-         // Adjust to keep some buffer below current price
          breakevenSL = currentPrice - (10 * point);
          LOG_DEBUG("⚠️ Breakeven SL adjusted below current price", g_debugPositionManager);
       }
       
-      // BUY: breakeven SL must be ABOVE entry (for profit)
       if(breakevenSL <= entryPrice)
       {
-         // Force at least minimum buffer above entry
          breakevenSL = entryPrice + (MathMax(InpBreakevenBuffer, 10) * point);
          LOG_DEBUG("⚠️ Breakeven SL adjusted above entry", g_debugPositionManager);
       }
    }
-   else  // SELL
+   else
    {
-      // SELL: breakeven SL must be ABOVE current price
       if(breakevenSL <= currentPrice)
       {
          breakevenSL = currentPrice + (10 * point);
          LOG_DEBUG("⚠️ Breakeven SL adjusted above current price", g_debugPositionManager);
       }
       
-      // SELL: breakeven SL must be BELOW entry (for profit)
       if(breakevenSL >= entryPrice)
       {
          breakevenSL = entryPrice - (MathMax(InpBreakevenBuffer, 10) * point);
@@ -683,13 +794,13 @@ void CPositionManager::SetBreakeven(ulong ticket, bool isBuy)
       }
    }
    
-   // ═══ LOG IF SETBREAKEVEN MOVES SL ═══
    double profitPips = 0;
    if(isBuy)
       profitPips = (currentPrice - entryPrice) / point;
    else
       profitPips = (entryPrice - currentPrice) / point;
    
+   // ═══ LOG BREAKEVEN SL MOVEMENT (TOGGLED) ═══
    if(breakevenSL != currentSL)
    {
       LogSLMovement(ticket, "SET_BREAKEVEN_FUNCTION", currentSL, breakevenSL, profitPips, 
@@ -705,9 +816,7 @@ void CPositionManager::SetBreakeven(ulong ticket, bool isBuy)
 }
 
 //+------------------------------------------------------------------+
-//| Apply Trailing Stop - ═══ THIS IS THE SUSPECT ═══             |
-//| This function applies trailing IMMEDIATELY with NO threshold   |
-//| ═══ CHECK WHERE THIS IS CALLED FROM! ═══                      |
+//| Apply Trailing Stop - KEPT FOR BACKWARD COMPATIBILITY          |
 //+------------------------------------------------------------------+
 void CPositionManager::ApplyTrailingStop(ulong ticket, bool isBuy)
 {
@@ -723,14 +832,17 @@ void CPositionManager::ApplyTrailingStop(ulong ticket, bool isBuy)
    double profitPips = isBuy ? (currentPrice - openPrice) / point 
                              : (openPrice - currentPrice) / point;
    
-   // ═══ CRITICAL: THIS FUNCTION HAS NO THRESHOLD CHECK! ═══
-   Print("🔴🔴🔴 ApplyTrailingStop() CALLED! 🔴🔴🔴");
-   Print("   Position #", ticket);
-   Print("   Current Price: ", DoubleToString(currentPrice, _Digits));
-   Print("   Current SL: ", DoubleToString(currentSL, _Digits));
-   Print("   Profit: ", DoubleToString(profitPips, 1), " pips");
-   Print("   ⚠️⚠️⚠️ NO THRESHOLD CHECK IN THIS FUNCTION! ⚠️⚠️⚠️");
-   Print("   CHECK WHAT CALLED THIS FUNCTION!");
+   // ═══ ONLY LOG IF TOGGLED ON ═══
+   if(m_logSLMovements || g_logSLMovements || g_debugPositionManager)
+   {
+      Print("🔴🔴🔴 ApplyTrailingStop() CALLED! 🔴🔴🔴");
+      Print("   Position #", ticket);
+      Print("   Current Price: ", DoubleToString(currentPrice, _Digits));
+      Print("   Current SL: ", DoubleToString(currentSL, _Digits));
+      Print("   Profit: ", DoubleToString(profitPips, 1), " pips");
+      Print("   ⚠️⚠️⚠️ NO THRESHOLD CHECK IN THIS FUNCTION! ⚠️⚠️⚠️");
+      Print("   CHECK WHAT CALLED THIS FUNCTION!");
+   }
    
    double trailDistance = InpTrailingStopPips * point;
    double newSL = isBuy ? currentPrice - trailDistance 
@@ -740,10 +852,7 @@ void CPositionManager::ApplyTrailingStop(ulong ticket, bool isBuy)
    
    if(shouldMove)
    {
-      Print("🔴🔴🔴 ApplyTrailingStop() IS MOVING SL! 🔴🔴🔴");
-      Print("   Old SL: ", DoubleToString(currentSL, _Digits));
-      Print("   New SL: ", DoubleToString(newSL, _Digits));
-      
+      // ═══ LOG SL MOVEMENT (TOGGLED) ═══
       LogSLMovement(ticket, "APPLY_TRAILING_STOP_FUNCTION", currentSL, newSL, profitPips, "Direct call to ApplyTrailingStop() - NO THRESHOLD CHECK!");
       
       double newTP = currentTP;
@@ -773,7 +882,6 @@ void CPositionManager::ModifySLTP(ulong ticket, double newSL, double newTP)
    
    if(!m_trade.OrderSend(request, result))
    {
-      // Only log errors
       Print("❌ Failed to modify position #", ticket, ": ", IntegerToString(result.retcode));
    }
 }
@@ -783,8 +891,14 @@ void CPositionManager::ModifySLTP(ulong ticket, double newSL, double newTP)
 //+------------------------------------------------------------------+
 void CPositionManager::ClosePosition(ulong ticket)
 {
-   if(!m_trade.PositionClose(ticket)) return;
-   RemoveState(ticket);
+   if(!PositionSelectByTicket(ticket)) return;
+   
+   double profit = PositionGetDouble(POSITION_PROFIT);
+   
+   if(m_trade.PositionClose(ticket))
+   {
+      OnPositionClosed(ticket, profit);
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -799,7 +913,12 @@ void CPositionManager::CloseAllPositions()
       
       if(IsOurPosition(ticket))
       {
-         m_trade.PositionClose(ticket);
+         double profit = PositionGetDouble(POSITION_PROFIT);
+         
+         if(m_trade.PositionClose(ticket))
+         {
+            OnPositionClosed(ticket, profit);
+         }
       }
    }
    ArrayResize(m_states, 0);

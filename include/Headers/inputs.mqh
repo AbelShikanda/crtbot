@@ -50,9 +50,10 @@ input int      InpMaxSlippage       = 10;
 //+------------------------------------------------------------------+
 //| BREAKEVEN SETTINGS                                              |
 //+------------------------------------------------------------------+
-input bool   InpUseBreakeven = true;        // Use Breakeven Stop
-input int    InpBreakevenPips = 500;         // Breakeven after X pips
-input int    InpBreakevenBuffer = 100;        // Breakeven buffer in pips
+input bool   InpUseBreakeven        = true;        // Use Breakeven Stop
+input int    InpBreakevenPips       = 250;         // Breakeven after X pips
+input int    InpBreakevenBuffer     = 100;        // Breakeven buffer in pips
+input int    InpSLBufferPoints      = 30;   // SL Buffer in points
 
 //+------------------------------------------------------------------+
 //| TRAILING STOP SETTINGS                                          |

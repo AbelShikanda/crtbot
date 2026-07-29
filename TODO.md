@@ -545,12 +545,17 @@ Updated component report to show "v3.7 - Removed Emergency Exits"
 PositionManager
 1. remove:
 Updated ManagePositions() to only get m_lossManagementEnabled from PortfolioManager (not the confidence value)
-Updated header comment to reflect "REMOVED LOSS CLOSE CONFIDENCE"
+3. stop logging the sl movements.
 
 Dashboard
 1. place desc in its own line.
 2. add a section for rr.
+3. RISK LIMITS CheckRiskLimits.
+4. Signal alignment.
+5. 
 
 Mainfile
 1. add a buffer to sl
-2. 
+2. bias entries to the ob nearest or at the asian range high or low depending on direction
+
+Riskmanager
