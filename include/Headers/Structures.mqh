@@ -1,7 +1,175 @@
+//+------------------------------------------------------------------+
+//|                        Structures.mqh                           |
+//|                    Core Structure Definitions                    |
+//|                    v3.20 - All Structs in One Place            |
+//+------------------------------------------------------------------+
+#property copyright "Copyright 2024"
+#property version "3.20"
+
 #include "../Headers/Enums.mqh"
 
+// ============================================================
+// TREND STRUCTURES
+// ============================================================
+
 //+------------------------------------------------------------------+
-//| Pullback Structure Definitions                                   |
+//| TREND RESULT STRUCTURE                                          |
+//+------------------------------------------------------------------+
+struct STrendResult
+{
+   string   direction;           // "BULLISH", "BEARISH", "NEUTRAL"
+   double   strength;            // 0-100 (Overall trend strength)
+   double   ema50Slope;          // Slope of EMA50
+   double   ema120Slope;         // Slope of EMA120
+   bool     priceAboveMA200;     // Price vs MA200 (for v3.20)
+   bool     maStackedBullish;    // 21 > 89 > 200
+   bool     maStackedBearish;    // 21 < 89 < 200
+   double   bullSignals;         // Number of bullish confirmations
+   double   bearSignals;         // Number of bearish confirmations
+   double   signalRatio;         // Bull signals / Total signals (0-1)
+   double   trendConfidence;     // 0-100 confidence in current trend
+   string   description;         // Human-readable description
+   string   narrative;           // Detailed narrative
+   datetime lastUpdate;
+   
+   // Additional fields for v3.20
+   double   ma21Slope;
+   double   ma89Slope;
+};
+
+//+------------------------------------------------------------------+
+//| TIMEFRAME DATA STRUCTURE                                        |
+//+------------------------------------------------------------------+
+struct STFData
+{
+   string   direction;           // "BULLISH", "BEARISH", "NEUTRAL"
+   double   strength;            // 0-100
+   double   ma21;                // MA21 value
+   double   ma89;                // MA89 value
+   double   ma200;               // MA200 value
+   bool     maStacked;           // 21>89>200 or 21<89<200
+   double   slope;               // MA slope
+};
+
+//+------------------------------------------------------------------+
+//| MARKET FEATURES STRUCTURE                                       |
+//+------------------------------------------------------------------+
+struct SMarketFeatures
+{
+   // Timeframe data
+   STFData  m15;
+   STFData  m5;
+   STFData  m1;
+   
+   // Derived metrics
+   double   weightedScore;       // 0-100
+   double   confidence;          // 0-100
+   double   alignment;           // 0-100
+   double   momentum;            // -100 to 100
+   double   pullbackDepth;       // 0-100
+   double   trendDuration;       // Number of bars
+   double   volatility;          // 0-100
+   
+   // Meta
+   datetime timestamp;
+   double   currentPrice;
+   bool     isAligned;
+   string   dominantDirection;
+   double   dominanceLevel;
+};
+
+//+------------------------------------------------------------------+
+//| TREND RECOMMENDATION STRUCTURE                                  |
+//+------------------------------------------------------------------+
+struct STrendRecommendation
+{
+   // Action
+   string   action;              // "ENTER_LONG", "ENTER_SHORT", "HOLD"
+   int      actionCode;          // 1, -1, 0
+   
+   // Position
+   double   positionSize;        // 0-3 lots
+   double   entryPrice;
+   double   stopLoss;
+   double   takeProfit;
+   double   riskReward;
+   
+   // Timing
+   string   timing;              // "NOW", "SOON", "WAIT", "NEVER"
+   int      waitBars;
+   
+   // Risk
+   string   riskLevel;           // "LOW", "MEDIUM", "HIGH", "VERY_HIGH"
+   double   riskPercent;         // 0-1
+   
+   // Confidence
+   string   confidenceLevel;     // "HIGH", "MEDIUM", "LOW"
+   double   confidenceScore;     // 0-100
+   
+   // Ready check
+   bool     isReady;
+   bool     isRejected;
+   string   rejectionReason;
+   
+   // Reasoning
+   string   primaryReason;
+   string   secondaryReasons[5];
+   int      reasonCount;
+   string   fullNarrative;
+   
+   // Data
+   SMarketFeatures features;
+   datetime timestamp;
+   double   currentPrice;
+};
+
+//+------------------------------------------------------------------+
+//| CROSSOVER RESULT STRUCTURE                                      |
+//+------------------------------------------------------------------+
+struct SCrossoverResult
+{
+   // M15
+   ENUM_CROSS_STATE    m15_21_89;
+   ENUM_CROSS_STATE    m15_89_200;
+   bool                m15_21_89_justCrossed;
+   bool                m15_89_200_justCrossed;
+   
+   // M5
+   ENUM_CROSS_STATE    m5_21_89;
+   bool                m5_21_89_justCrossed;
+   
+   // M1
+   string              m1_position;     // "ABOVE", "NEAR", "BELOW"
+   double              m1_distance;     // Points from MA21
+   
+   // MA Values
+   double              ma21_M15;
+   double              ma89_M15;
+   double              ma200_M15;
+   double              ma21_M5;
+   double              ma89_M5;
+   double              ma200_M5;
+   double              ma21_M1;
+   double              currentPrice;
+   double              pointValue;
+   
+   // Derived
+   bool                isGoldenCross;
+   bool                isDeathCross;
+   bool                allBullish;
+   bool                allBearish;
+   bool                isDivergence;
+   int                 scenarioNumber;  // 1-27
+   string              scenarioName;    // "STRONG_BUY", "BUY_DIP", etc.
+   int                 priority;        // 1-6 (1 = highest)
+};
+
+// ============================================================
+// PULLBACK STRUCTURES
+// ============================================================
+
+//+------------------------------------------------------------------+
+//| Momentum Scores Structure                                       |
 //+------------------------------------------------------------------+
 struct MomentumScores
 {
@@ -46,6 +214,9 @@ struct MomentumScores
    string   narrative;
 };
 
+//+------------------------------------------------------------------+
+//| Prescribed Trade Structure                                      |
+//+------------------------------------------------------------------+
 struct PrescribedTrade
 {
    int      signal;
@@ -78,10 +249,9 @@ struct RangeData
    bool     isValid;
 };
 
-// ============================================================
-// SCENARIO RESULT STRUCTURE
-// ============================================================
-
+//+------------------------------------------------------------------+
+//| Scenario Result Structure                                       |
+//+------------------------------------------------------------------+
 struct ScenarioResult
 {
    ENUM_MARKET_SCENARIO scenario;
@@ -97,155 +267,127 @@ struct ScenarioResult
 };
 
 //+------------------------------------------------------------------+
-//| Component Data Structure - For Dashboard and Scenario Detection |
+//| Component Data Structure                                        |
 //+------------------------------------------------------------------+
-// In Structures.mqh - Add these fields to SComponentData
 struct SComponentData
 {
-   // --- Existing fields ---
    double   pbConfidence;
    double   pbPercent;
    double   pbAdjustedPercent;
    string   pbZone;
-   
    double   mtfConfidence;
    int      mtfTotalScore;
    int      mtfM5Score;
    int      mtfM15Score;
    int      mtfH1Score;
-   
    double   macdConfidence;
    double   macdHistogram;
    double   macdScore;
-   
    double   adxConfidence;
    double   adxValue;
    string   adxDirection;
-   
    double   rsiConfidence;
    double   rsiValue;
    string   rsiCondition;
-   
    double   volConfidence;
    double   volScore;
    double   volRatio;
    string   volCondition;
    double   priceChange;
-   
-   // --- Existing final fields ---
    double   finalConfidence;
    string   finalDirection;
    int      activeComponents;
    double   overallScore;
    double   bullPercentage;
    double   bearPercentage;
-   
-   // --- NEW FIELDS for Portfolio Boost ---
-   double   baseConfidence;      // Original confidence before boost
-   double   portfolioBoost;      // Boost/penalty from PortfolioManager
+   double   baseConfidence;
+   double   portfolioBoost;
 };
 
 //+------------------------------------------------------------------+
-//| Pullback Analysis Result Structure                               |
+//| Pullback Analysis Result Structure                              |
 //+------------------------------------------------------------------+
 struct SPullbackAnalysisResult
 {
-   // Confidence (score-based, not bull/bear)
-   double   confidence;          // Overall confidence score (0-100)
-   double   pullbackScore;       // Pullback zone score (0-100)
-   double   zoneProximity;       // Proximity to perfect zone (0-100)
-   
-   // Regional pullback data
-   double   pullbackPercent;     // Current pullback percentage
-   double   adjustedPercent;     // Trend-adjusted percentage
-   string   pullbackZone;        // Zone description
-   string   zoneCategory;        // PERFECT, SWEET, EDGE, TRANSITION, EXTREME
-   int      zoneLevel;           // 5=Perfect, 4=Sweet, 3=Edge, 2=Transition, 1=Extreme
-   bool     inSweetZone;         // Is pullback in sweet zone (40-80%)
-   bool     inPerfectZone;       // Is pullback in perfect zone (55-65%)
-   
-   // Description and narrative
-   string   description;         // Brief description of what's happening
-   string   narrative;           // Detailed narrative
-   string   shortNarrative;      // Short version for display
-   string   action;              // Recommended action
-   string   riskLevel;           // Risk level assessment
-   
-   // Chart display data - PURE DATA ONLY (no visual decisions)
-   string   chartLabel;          // Label text (data only, no emojis)
-   bool     showOnChart;         // Whether to show on chart
-   
-   // Price levels
-   double   currentPrice;        // Current price
-   double   rangeHigh;           // Range high
-   double   rangeLow;            // Range low
-   double   line40;              // 40% retracement line
-   double   line80;              // 80% retracement line
-   double   linePerfectLow;      // Perfect zone low (55%)
-   double   linePerfectHigh;     // Perfect zone high (65%)
+   double   confidence;
+   double   pullbackScore;
+   double   zoneProximity;
+   double   pullbackPercent;
+   double   adjustedPercent;
+   string   pullbackZone;
+   string   zoneCategory;
+   int      zoneLevel;
+   bool     inSweetZone;
+   bool     inPerfectZone;
+   string   description;
+   string   narrative;
+   string   shortNarrative;
+   string   action;
+   string   riskLevel;
+   string   chartLabel;
+   bool     showOnChart;
+   double   currentPrice;
+   double   rangeHigh;
+   double   rangeLow;
+   double   line40;
+   double   line80;
+   double   linePerfectLow;
+   double   linePerfectHigh;
 };
 
 //+------------------------------------------------------------------+
-//| Pullback Drawing Data Structure - PURE DATA ONLY                |
-//| NO visual decisions (colors, emojis, etc.)                      |
+//| Pullback Drawing Data Structure                                 |
 //+------------------------------------------------------------------+
 struct SPullbackDrawingData
 {
-   // Range data
    double rangeHigh;
    double rangeLow;
    double currentPrice;
    double rangeSize;
-   
-   // Pullback lines (mathematical calculations only)
    double line40;
    double line80;
    double linePerfectLow;
    double linePerfectHigh;
-   
-   // Raw zone data (no visual decisions)
    double adjustedPercent;
-   string zoneCategory;          // PERFECT, SWEET, EDGE, TRANSITION, EXTREME
-   int    zoneLevel;             // 5=Perfect, 4=Sweet, 3=Edge, 2=Transition, 1=Extreme
-   
-   // Validity
+   string zoneCategory;
+   int    zoneLevel;
    bool isValid;
    int trend;
 };
 
 //+------------------------------------------------------------------+
-//| Pullback Summary Structure for Component Manager                |
+//| Pullback Summary Structure                                      |
 //+------------------------------------------------------------------+
 struct SPullbackSummary
 {
-   double   pullbackPercent;     // Current pullback percentage (0-100)
-   double   pullbackScore;       // Pullback zone score (0-100)
-   double   adjustedPercent;     // Trend-adjusted percentage
-   string   zoneCategory;        // PERFECT, SWEET, EDGE, TRANSITION, EXTREME
-   string   shortDescription;    // Brief one-line description
-   string   actionSuggestion;    // Recommended action
-   bool     isValid;             // Whether the analysis is valid
-   int      trend;               // 1=Bullish, -1=Bearish, 0=Neutral
+   double   pullbackPercent;
+   double   pullbackScore;
+   double   adjustedPercent;
+   string   zoneCategory;
+   string   shortDescription;
+   string   actionSuggestion;
+   bool     isValid;
+   int      trend;
 };
 
 //+------------------------------------------------------------------+
-//| Component Display Structure - SINGLE DEFINITION                 |
+//| Component Display Structure                                     |
 //+------------------------------------------------------------------+
 struct SComponentDisplay
 {
    string   name;
    string   direction;
    string   directionText;
-   double   confidence;      // Confidence for calculations (0-100)
-   double   score;           // Score for display only (0-100)
-   double   rawScore;        // Underlying raw value (e.g., percentage)
+   double   confidence;
+   double   score;
+   double   rawScore;
    double   weight;
    bool     isActive;
-   string   alignment;       // AGREE, DISAGREE, NEUTRAL
+   string   alignment;
 };
 
 //+------------------------------------------------------------------+
-//| Component Result Structure                                       |
+//| Component Result Structure                                      |
 //+------------------------------------------------------------------+
 struct SComponentResult
 {
@@ -255,18 +397,14 @@ struct SComponentResult
    SComponentDisplay adx;
    SComponentDisplay rsi;
    SComponentDisplay vol;
-   
    string   direction;
-   double   confidence;          // Overall confidence for calculations (weighted avg)
-   double   overallScore;        // Overall score for display only (weighted avg)
-   
-   // Mathematical breakdown for debugging
-   double   rawConfidenceTotal;  // Sum of weighted confidences (agree - disagree)
-   double   rawAgreeTotal;       // Sum of agreeing weighted confidences
-   double   rawDisagreeTotal;    // Sum of disagreeing weighted confidences
-   double   rawScoreTotal;       // Sum of weighted scores (agree - disagree)
-   double   activeWeight;        // Total weight of active components (AGREE + DISAGREE)
-   
+   double   confidence;
+   double   overallScore;
+   double   rawConfidenceTotal;
+   double   rawAgreeTotal;
+   double   rawDisagreeTotal;
+   double   rawScoreTotal;
+   double   activeWeight;
    int      activeComponents;
    int      agreeingComponents;
    int      disagreeingComponents;
@@ -276,7 +414,7 @@ struct SComponentResult
 };
 
 //+------------------------------------------------------------------+
-//| Position State - Tracks position flags                          |
+//| Position State Structure                                        |
 //+------------------------------------------------------------------+
 struct PositionState
 {
@@ -296,6 +434,84 @@ struct PositionState
    double partialClosePrice;
    double originalVolume;
    bool   boostActive;
-   double boostTPDistance;      // Fixed 100 points when boost active
-   double lastBoostTP;           // Last TP value set during boost
+   double boostTPDistance;
+   double lastBoostTP;
+};
+
+//+------------------------------------------------------------------+
+//| Session Information Structure                                    |
+//+------------------------------------------------------------------+
+struct SessionInfo
+{
+   int      sessionId;           // 0=Off-Hours, 1=London, 2=NY, 3=Asia
+   string   name;                // "London", "New York", "Asia"
+   string   shortName;           // "LONDON", "NY", "ASIA"
+   string   hours;               // "10:30-18:30 UTC"
+   int      adjustment;          // +3 bars
+   datetime startTime;           // Session start time
+   datetime endTime;             // Session end time
+   double   high;                // Session high price
+   double   low;                 // Session low price
+   bool     isValid;             // Whether session data is valid
+};
+
+//+------------------------------------------------------------------+
+//| Order Block Structure                                            |
+//+------------------------------------------------------------------+
+struct OrderBlock
+{
+   double high;
+   double low;
+   double open;
+   double close;
+   datetime time;
+   bool isValid;
+   bool isBullish;      // true = bullish OB, false = bearish OB
+   bool isMitigated;    // true = already tested
+   int strength;        // 1-3 (based on size)
+   int index;           // Position in array
+   double distance;     // Distance from current price
+   int methodType;      // 1=Engulfing, 2=Reversal, 3=Trend
+};
+
+
+//+------------------------------------------------------------------+
+//| Component Narrative Result Structure                             |
+//+------------------------------------------------------------------+
+struct SComponentNarrative
+{
+   string   componentName;      // "PB", "MTF", "MACD", "ADX", "RSI", "VOL"
+   string   direction;          // "BULLISH", "BEARISH", "NEUTRAL"
+   string   narrative;          // Component-specific narrative
+   string   shortNarrative;     // Short version for display
+   double   confidence;         // Component confidence
+   string   strength;           // "STRONG", "MODERATE", "WEAK"
+   string   emoji;              // Component emoji
+   bool     isActive;           // Whether component is active
+   string   alignment;          // "AGREE", "DISAGREE", "NEUTRAL"
+};
+
+//+------------------------------------------------------------------+
+//| Synthesized Scenario Result                                      |
+//+------------------------------------------------------------------+
+struct SSynthesizedScenario
+{
+   string   scenarioName;       // Name of the scenario
+   string   scenarioEmoji;      // Emoji for the scenario
+   color    scenarioColor;      // Color for display
+   double   confidence;         // Overall confidence
+   string   direction;          // "BULLISH", "BEARISH", "NEUTRAL"
+   string   description;        // Brief description
+   string   narrative;          // Full synthesized narrative
+   string   shortNarrative;     // Short version
+   string   action;             // Recommended action
+   string   riskLevel;          // Risk level
+   SComponentNarrative componentNarratives[6]; // All component narratives
+   int      componentCount;     // Number of active components
+   int      agreeingCount;      // Number agreeing
+   int      disagreeingCount;   // Number disagreeing
+   string   marketState;        // "TRENDING", "RANGING", "BREAKING OUT", "CONSOLIDATING"
+   string   momentum;           // "STRONG", "MODERATE", "WEAK", "NONE"
+   string   warning;            // Any warnings
+   bool     isValid;
 };

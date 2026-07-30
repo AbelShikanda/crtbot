@@ -14,9 +14,11 @@
 //|                    + COOLDOWN ON LOSS                          |
 //|                    + DAILY TRADE LIMIT (3)                    |
 //|                    + PROFIT THRESHOLDS ($20)                 |
+//|                    + v3.48: CANDLE MODULE INTEGRATED          |
+//|                    + COOLDOWN RESET ON EXHAUSTION             |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
-#property version "3.47"
+#property version "3.48"
 #property strict
 
 // ============================================================
@@ -38,27 +40,28 @@
 #include "include/Data/VolumeModule.mqh"
 #include "include/Data/MtfModule.mqh"
 #include "include/Data/PullbackModule.mqh"
-#include "include/Core/ScenarioNarrative.mqh"
+#include "include/Data/CandleModule.mqh"
 
-// Trend Module
+// Managers
 #include "include/PackageManagers/TrendManager.mqh"
-
 #include "include/PackageManagers/PositionManager.mqh"
 #include "include/PackageManagers/Riskmanager.mqh"
 #include "include/PackageManagers/PortfolioManager.mqh"
+#include "include/PackageManagers/ComponentManager.mqh"
+#include "include/PackageManagers/SessionManager.mqh"
 
 // Core Modules
 #include "include/Core/Dashboard.mqh"
 #include "include/Core/ChartModule.mqh"
-#include "include/PackageManagers/ComponentManager.mqh"
-#include "include/PackageManagers/SessionManager.mqh"
 #include "include/Data/OrderblockModule.mqh"
+#include "include/Core/ScenarioNarrative.mqh"
+
 
 // ============================================================
 // GLOBAL DEBUG TOGGLES - SET TO FALSE BY DEFAULT
 // ============================================================
 bool g_debugMode = false;
-bool g_debugMain = true;
+bool g_debugMain = false;
 bool g_debugTrend = false;
 bool g_debugPortfolio = false;
 bool g_debugPosition = false;
@@ -67,6 +70,7 @@ bool g_debugComponent = false;
 bool g_debugPullback = false;
 bool g_debugSession = false;
 bool g_debugOrderBlock = false;
+bool g_debugCandle = false;
 
 // ============================================================
 // GLOBAL VARIABLES
@@ -79,6 +83,7 @@ CComponentManager *g_componentManager = NULL;
 CTrendManager     *g_trendManager = NULL;
 CSessionManager   *g_sessionManager = NULL;
 COrderBlockDisplay *g_orderBlockDisplay = NULL;
+CCandleModule     *g_candleModule = NULL;
 CTrade             g_trade;
 int                g_magicNumber;
 datetime           g_lastBarTime = 0;
@@ -99,7 +104,7 @@ int                g_neutralCounter = 0;
 datetime           g_lastPortfolioLog = 0;
 
 // ============================================================
-// ═══ NEW: RISK MANAGER STATUS FOR DASHBOARD ═══
+// ═══ RISK MANAGER STATUS FOR DASHBOARD ═══
 // ============================================================
 string g_riskStatusMessage = "Ready";
 bool   g_riskCanTrade = true;
@@ -115,6 +120,7 @@ enum EInitStatus
    INIT_STATUS_PULLBACK,
    INIT_STATUS_SESSION_MANAGER,
    INIT_STATUS_ORDER_BLOCK_DISPLAY,
+   INIT_STATUS_CANDLE_MODULE,
    INIT_STATUS_COMPLETE
 };
 
@@ -130,7 +136,7 @@ int OnInit()
 {
    Logger::Initialize();
    
-   LOG_INFO("=== PULLBACK EA v3.47 (RISK MANAGER INTEGRATED) ===", g_debugMain);
+   LOG_INFO("=== PULLBACK EA v3.48 (CANDLE MODULE INTEGRATED) ===", g_debugMain);
    LOG_INFO("   Boost TP Distance: 100 points (when boost active)", g_debugMain);
    LOG_INFO("   TP never moves backward", g_debugMain);
    LOG_INFO("   Order Blocks: " + (InpShowOrderBlocks ? "ENABLED" : "DISABLED"), g_debugMain);
@@ -141,6 +147,11 @@ int OnInit()
    LOG_INFO("     - Max Daily Trades: 3", g_debugMain);
    LOG_INFO("     - Profit Threshold: $20 (stops day)", g_debugMain);
    LOG_INFO("     - Daily Reset: 3:00 AM", g_debugMain);
+   LOG_INFO("   CANDLE MODULE v1.01:", g_debugMain);
+   LOG_INFO("     - Monitors M15 for exhaustion during cooldown", g_debugMain);
+   LOG_INFO("     - Auto-resets cooldown on valid exhaustion", g_debugMain);
+   LOG_INFO("     - Requires M15 + M1 confirmation", g_debugMain);
+   LOG_INFO("     - Waits for next M15 candle after cooldown starts", g_debugMain);
    
    g_magicNumber = InpMagicNumber;
    g_trade.SetExpertMagicNumber(g_magicNumber);
@@ -155,7 +166,6 @@ int OnInit()
       LOG_ERROR("❌ Failed to create TrendManager");
       return INIT_FAILED;
    }
-   // g_trendManager.EnableDebug(g_debugTrend);
    
    // ============================================================
    // 2. CREATE RISK MANAGER
@@ -180,7 +190,7 @@ int OnInit()
    LOG_DEBUG("✅ PositionManager created", g_debugPosition);
    
    // ============================================================
-   // ★★★ NEW: CONNECT RISK MANAGER TO POSITION MANAGER ★★★
+   // ★★★ CONNECT RISK MANAGER TO POSITION MANAGER ★★★
    // ============================================================
    if(g_positionManager != NULL && g_riskManager != NULL)
    {
@@ -202,10 +212,9 @@ int OnInit()
       LOG_ERROR("❌ Failed to create PortfolioManager");
       return INIT_FAILED;
    }
-   // g_portfolioManager.EnableDebug(g_debugPortfolio);
    
    // ============================================================
-   // ★★★ CRITICAL: CONNECT TRENDMANAGER → PORTFOLIOMANAGER ★★★
+   // ★★★ CONNECT TRENDMANAGER → PORTFOLIOMANAGER ★★★
    // ============================================================
    if(g_trendManager != NULL && g_portfolioManager != NULL)
    {
@@ -214,7 +223,7 @@ int OnInit()
    }
    
    // ============================================================
-   // ★★★ CRITICAL: CONNECT PORTFOLIOMANAGER → POSITIONMANAGER ★★★
+   // ★★★ CONNECT PORTFOLIOMANAGER → POSITIONMANAGER ★★★
    // ============================================================
    if(g_portfolioManager != NULL && g_positionManager != NULL)
    {
@@ -237,7 +246,6 @@ int OnInit()
       LOG_ERROR("❌ Failed to create ComponentManager");
       return INIT_FAILED;
    }
-   // g_componentManager.EnableDebug(g_debugComponent);
    
    if(g_componentManager != NULL && g_trendManager != NULL)
    {
@@ -336,11 +344,25 @@ int OnInit()
          g_dashboard.SetTrendManager(g_trendManager);
          g_dashboard.SetComponentManager(g_componentManager);
          g_dashboard.SetMinConfidenceThreshold(InpNeutralThreshold);
-         
-         // ═══ NEW: SET RISK MANAGER FOR DASHBOARD ═══
-         // g_dashboard.SetRiskManager(g_riskManager);
-         // LOG_DEBUG("✅ Dashboard → RiskManager connected", g_debugMain);
       }
+   }
+   
+   // ============================================================
+   // 12. CREATE CANDLE MODULE (for cooldown monitoring)
+   // ============================================================
+   g_candleModule = new CCandleModule(_Symbol, PERIOD_M15, InpEntryTF);
+   if(g_candleModule == NULL)
+   {
+      LOG_ERROR("❌ Failed to create CandleModule");
+      return INIT_FAILED;
+   }
+   g_candleModule.SetDebug(g_debugCandle);
+   LOG_DEBUG("✅ CandleModule created (M15 exhaustion monitoring)", g_debugMain);
+   
+   // Connect RiskManager to CandleModule (for cooldown reset)
+   if(g_riskManager != NULL && g_candleModule != NULL)
+   {
+      LOG_INFO("✅ CandleModule → RiskManager connected (cooldown reset)", g_debugMain);
    }
    
    EventSetTimer(1);
@@ -350,7 +372,7 @@ int OnInit()
    g_lastInitAttempt = 0;
    g_initializationFailed = false;
    
-   LOG_INFO("✅ EA INITIALIZED - v3.47 (Risk Manager Integrated)", g_debugMain);
+   LOG_INFO("✅ EA INITIALIZED - v3.48 (Candle Module Integrated)", g_debugMain);
    LOG_INFO("   TrendManager → PortfolioManager: ✓", g_debugMain);
    LOG_INFO("   PortfolioManager → PositionManager: ✓ (Boost TP 100 pts)", g_debugMain);
    LOG_INFO("   PositionManager → RiskManager: ✓ (Trade result tracking)", g_debugMain);
@@ -358,12 +380,14 @@ int OnInit()
    LOG_INFO("   SessionManager: ✓ (Active Session Tracking)", g_debugMain);
    LOG_INFO("   ChartModule → SessionManager: ✓ (Session Overlays)", g_debugMain);
    LOG_INFO("   ChartModule → OrderBlockDisplay: ✓ (H4 Order Blocks)", g_debugMain);
-   LOG_INFO("   Dashboard → RiskManager: ✓ (Risk status display)", g_debugMain);
+   LOG_INFO("   CandleModule: ✓ (Cooldown exhaustion monitoring)", g_debugMain);
+   LOG_INFO("   CandleModule: ✓ (Waits for next M15 candle)", g_debugMain);
    LOG_INFO("   Position management every 1 second", g_debugMain);
    LOG_INFO("=========================================================", g_debugMain);
    
    return INIT_SUCCEEDED;
 }
+
 //+------------------------------------------------------------------+
 //| TICK HANDLER                                                     |
 //+------------------------------------------------------------------+
@@ -392,7 +416,121 @@ void OnTick()
       }
    }
    
-   // ═══ RUN EVERY 10 SECONDS (instead of only on new bar) ═══
+   // ═══ COOLDOWN MONITORING - CANDLE MODULE ═══
+   if(g_riskManager != NULL && g_riskManager.IsInCooldown() && g_candleModule != NULL)
+   {
+      // Track cooldown start to reset candle tracking
+      static bool cooldownStartLogged = false;
+      
+      if(!cooldownStartLogged)
+      {
+         // Reset candle tracking when cooldown starts
+         g_candleModule.ResetCooldownCandleTracking();
+         cooldownStartLogged = true;
+         
+         int waitCandles = g_candleModule.GetWaitCandles();
+         LOG_DEBUG("🕯️ CandleModule: Waiting for " + IntegerToString(waitCandles) + 
+                   " M15 candle(s) before exhaustion check", g_debugCandle);
+      }
+      
+      // Only check periodically (every 30 seconds during cooldown for better responsiveness)
+      static datetime lastCandleCheck = 0;
+      datetime currentTime = TimeCurrent();
+      
+      if(currentTime - lastCandleCheck >= 30)
+      {
+         lastCandleCheck = currentTime;
+         
+         // Get trend direction from TrendManager
+         int trendDirection = 0;
+         if(g_trendManager != NULL)
+         {
+            if(g_trendManager.IsBullish()) trendDirection = 1;
+            else if(g_trendManager.IsBearish()) trendDirection = -1;
+         }
+         
+         // If trend is neutral, use component manager sentiment
+         if(trendDirection == 0 && g_componentManager != NULL)
+         {
+            SMarketAnalysis analysis = g_componentManager.AnalyzeMarket();
+            if(analysis.overallSentiment == "BULLISH") trendDirection = 1;
+            else if(analysis.overallSentiment == "BEARISH") trendDirection = -1;
+         }
+         
+         if(trendDirection != 0)
+         {
+            double cooldownRemaining = g_riskManager.GetCooldownRemainingSeconds();
+            
+            if(g_candleModule.ShouldResetCooldown(trendDirection, cooldownRemaining))
+            {
+               LOG_INFO("🔄 CANDLE MODULE: Cooldown reset triggered - Exhaustion detected on M15", g_debugCandle);
+               
+               // Get the result details for logging
+               SExhaustionResult result = g_candleModule.AnalyzeExhaustion(trendDirection, cooldownRemaining);
+               
+               g_riskManager.ResetCooldown();
+               
+               string resetReason = g_candleModule.GetResetReason(trendDirection);
+               LOG_INFO("   Reason: " + resetReason, g_debugMain);
+               LOG_INFO("   HTF Pattern: " + result.htfPattern + " (" + DoubleToString(result.htfPatternStrength, 0) + "%)", g_debugCandle);
+               LOG_INFO("   LTF Pattern: " + result.ltfPattern + " (" + DoubleToString(result.ltfPatternStrength, 0) + "%)", g_debugCandle);
+               LOG_INFO("   Candles Waited: " + IntegerToString(result.candlesWaited) + "/" + IntegerToString(result.candlesRequired), g_debugCandle);
+               
+               g_riskStatusMessage = "Cooldown Reset: " + resetReason;
+               
+               // Reset the cooldown tracking flag
+               cooldownStartLogged = false;
+               
+               if(g_dashboard != NULL)
+               {
+                  // Update dashboard if needed
+               }
+            }
+            else
+            {
+               // Log status periodically during cooldown
+               static datetime lastStatusLog = 0;
+               if(currentTime - lastStatusLog >= 300) // Every 5 minutes
+               {
+                  lastStatusLog = currentTime;
+                  SExhaustionResult result = g_candleModule.AnalyzeExhaustion(trendDirection, cooldownRemaining);
+                  
+                  if(!result.isValid && result.candlesWaited < g_candleModule.GetWaitCandles())
+                  {
+                     // Still waiting for candles
+                     LOG_DEBUG("🕯️ Candle Monitor: " + result.waitStatus, g_debugCandle);
+                  }
+                  else if(result.isValid)
+                  {
+                     LOG_DEBUG("🕯️ Candle Monitor: " + result.description + " (Conf: " + 
+                              DoubleToString(result.confidence, 0) + "%)", g_debugCandle);
+                     LOG_DEBUG("   HTF: " + result.htfPattern + " (" + DoubleToString(result.htfPatternStrength, 0) + "%)", g_debugCandle);
+                     LOG_DEBUG("   LTF: " + result.ltfPattern + " (" + DoubleToString(result.ltfPatternStrength, 0) + "%)", g_debugCandle);
+                  }
+                  else
+                  {
+                     LOG_DEBUG("🕯️ Candle Monitor: " + result.description, g_debugCandle);
+                  }
+               }
+            }
+         }
+      }
+   }
+   else
+   {
+      // Reset cooldown tracking flag when not in cooldown
+      static bool wasInCooldown = false;
+      if(wasInCooldown && g_riskManager != NULL && !g_riskManager.IsInCooldown())
+      {
+         wasInCooldown = false;
+      }
+      if(g_riskManager != NULL && g_riskManager.IsInCooldown())
+      {
+         wasInCooldown = true;
+      }
+   }
+   
+   // ═══ RUN EVERY 10 SECONDS ═══
    static datetime lastCheckTime = 0;
    datetime currentTime = TimeCurrent();
    
@@ -554,7 +692,22 @@ bool InitializeIndicatorsAsync()
       g_initStatus = INIT_STATUS_ORDER_BLOCK_DISPLAY;
    }
    
-   if(g_initStatus == INIT_STATUS_ORDER_BLOCK_DISPLAY)
+   if(g_initStatus < INIT_STATUS_CANDLE_MODULE)
+   {
+      if(g_candleModule != NULL)
+      {
+         // CandleModule needs M15 and M1 data
+         if(!WaitForData(PERIOD_M15, 100))
+            return false;
+         if(!WaitForData(PERIOD_M1, 100))
+            return false;
+         
+         LOG_DEBUG("✅ CandleModule initialized", g_debugCandle);
+      }
+      g_initStatus = INIT_STATUS_CANDLE_MODULE;
+   }
+   
+   if(g_initStatus == INIT_STATUS_CANDLE_MODULE)
    {
       if(g_pullback != NULL && g_trendManager != NULL)
       {
@@ -586,6 +739,13 @@ bool InitializeIndicatorsAsync()
                LOG_DEBUG("📊 Risk Manager: " + g_riskManager.GetStatusMessage(), g_debugRisk);
                LOG_DEBUG("   Daily Trades: " + IntegerToString(g_riskManager.GetDailyTradeCount()) + 
                          "/" + IntegerToString(g_riskManager.GetMaxDailyTrades()), g_debugRisk);
+            }
+            
+            // Log Candle Module status
+            if(g_candleModule != NULL && g_debugCandle)
+            {
+               LOG_DEBUG("🕯️ Candle Module: Ready (M15 exhaustion monitoring)", g_debugCandle);
+               LOG_DEBUG("   Will wait for next M15 candle after cooldown starts", g_debugCandle);
             }
             
             return true;
@@ -643,7 +803,7 @@ void OnTimer()
       // g_portfolioManager.MonitorPositions(); // REMOVED - no loss management
    }
    
-   // ═══ NEW: RISK MANAGER PERIODIC CHECK ═══
+   // ═══ RISK MANAGER PERIODIC CHECK ═══
    if(g_riskManager != NULL)
    {
       // Update status message
@@ -669,7 +829,7 @@ void OnTimer()
       }
    }
    
-   // ═══ NEW: LOG RISK STATUS PERIODICALLY ═══
+   // ═══ LOG RISK STATUS PERIODICALLY ═══
    if(g_riskManager != NULL && g_debugRisk)
    {
       static datetime lastRiskLog = 0;
@@ -682,6 +842,23 @@ void OnTimer()
          if(g_riskManager.IsInCooldown())
          {
             LOG_DEBUG("   Cooldown: " + g_riskManager.GetCooldownRemaining(), g_debugRisk);
+         }
+      }
+   }
+   
+   // ═══ CANDLE MODULE PERIODIC LOG ═══
+   if(g_candleModule != NULL && g_riskManager != NULL && g_riskManager.IsInCooldown())
+   {
+      static datetime lastCandleLog = 0;
+      if(TimeCurrent() - lastCandleLog >= 300) // Log every 5 minutes during cooldown
+      {
+         lastCandleLog = TimeCurrent();
+         if(g_debugCandle)
+         {
+            string status = g_candleModule.GetStatusReport();
+            string waitStatus = g_candleModule.GetCandleWaitStatus();
+            LOG_DEBUG("🕯️ " + status, g_debugCandle);
+            LOG_DEBUG("   ⏳ " + waitStatus, g_debugCandle);
          }
       }
    }
@@ -729,6 +906,7 @@ void OnDeinit(const int reason)
       g_positionManager.CloseAllPositions();
    }
    
+   if(g_candleModule != NULL) { delete g_candleModule; g_candleModule = NULL; }
    if(g_orderBlockDisplay != NULL) { delete g_orderBlockDisplay; g_orderBlockDisplay = NULL; }
    if(g_sessionManager != NULL) { delete g_sessionManager; g_sessionManager = NULL; }
    if(g_portfolioManager != NULL) { delete g_portfolioManager; g_portfolioManager = NULL; }
@@ -859,83 +1037,250 @@ bool CalculateTakeProfits(int signal, double currentPrice, double rangeHigh, dou
 }
 
 //+------------------------------------------------------------------+
-//| CheckSignal - WITH SEQUENTIAL PROGRESS UPDATES                  |
+//| Get State Name - Helper for Crossover States                    |
+//+------------------------------------------------------------------+
+string GetStateName(ENUM_CROSS_STATE state)
+{
+   switch(state)
+   {
+      case CROSS_UP:   return "↗ CROSS UP";
+      case CROSS_ZONE: return "≈ ZONE";
+      case CROSS_DOWN: return "↘ CROSS DOWN";
+      case CLEAR_UP:   return "▲ CLEAR UP";
+      case CLEAR_DOWN: return "▼ CLEAR DOWN";
+      default:         return "UNKNOWN";
+   }
+}
+
+//+------------------------------------------------------------------+
+//| CheckSignal - TREND MANAGER RECOMMENDATIONS FIRST               |
+//| REJECT entry if TrendManager says no                           |
 //| REJECT entry if Risk-Reward < 1.5:1                            |
 //| REJECT entry if in NO GO ZONE (0-20% or 90-100%)              |
 //| REJECT entry if RiskManager says no                           |
 //| SL Buffer protection included                                   |
+//| WITH FULL DEBUG LOGGING                                        |
 //+------------------------------------------------------------------+
 void CheckSignal()
 {
    if(g_componentManager == NULL || g_trendManager == NULL) 
+   {
+      LOG_DEBUG("❌ CheckSignal: ComponentManager or TrendManager is NULL", g_debugMain);
       return;
+   }
    
-   // ═══ STEP 1: TREND CHECK ═══
+   LOG_DEBUG("═══════════════════════════════════════════════════════════", g_debugMain);
+   LOG_DEBUG("🔍 CHECK SIGNAL STARTED", g_debugMain);
+   LOG_DEBUG("═══════════════════════════════════════════════════════════", g_debugMain);
+   
+   // ═══════════════════════════════════════════════════════════════
+   // ═══ STEP 1: TREND MANAGER RECOMMENDATION CHECK ═══
+   // ═══════════════════════════════════════════════════════════════
+   LOG_DEBUG("📌 STEP 1: Trend Manager Recommendation Check", g_debugMain);
+   
    if(g_dashboard != NULL)
-      g_dashboard.SetCheckPending(1, "Analyzing trend strength and direction...");
+      g_dashboard.SetCheckPending(1, "Analyzing recommendations...");
    UpdateDashboard();
    
-   // Check Risk Manager first
+   // Check Risk Manager first (quick exit)
    if(g_riskManager != NULL && !g_riskManager.CanTrade())
    {
+      LOG_DEBUG("❌ Risk Manager blocks trading: " + g_riskManager.GetStatusMessage(), g_debugMain);
       if(g_dashboard != NULL)
-         g_dashboard.SetCheckFailed(1, "Risk Manager blocks trading: " + g_riskManager.GetStatusMessage());
+         g_dashboard.SetCheckFailed(1, "Risk blocks trading: " + g_riskManager.GetStatusMessage());
       return;
    }
+   LOG_DEBUG("✅ Risk Manager passed", g_debugMain);
    
+   // ─── ANALYZE TREND (this updates all TrendManager data) ───
+   LOG_DEBUG("📊 Calling g_trendManager.AnalyzeTrend()...", g_debugMain);
    STrendResult trendResult = g_trendManager.AnalyzeTrend();
+   LOG_DEBUG("✅ AnalyzeTrend() complete", g_debugMain);
    
-   int tradeDirection = 0;
-   if(trendResult.direction == "BULLISH")
-      tradeDirection = 1;
-   else if(trendResult.direction == "BEARISH")
-      tradeDirection = -1;
+   // ─── GET CROSSOVER RECOMMENDATION ───
+   LOG_DEBUG("📊 Getting crossover data...", g_debugMain);
+   int crossoverPriority = g_trendManager.GetCrossoverPriority();
+   string crossoverScenario = g_trendManager.GetCrossoverScenarioName();
+   bool isGoldenCross = g_trendManager.IsGoldenCross();
+   bool isDeathCross = g_trendManager.IsDeathCross();
+   string trendDirection = g_trendManager.GetDirection();
+   double trendStrength = g_trendManager.GetStrength();
+   double trendConfidence = g_trendManager.GetTrendConfidence();
+   bool isM1Compatible = g_trendManager.IsM1Compatible();
+   bool isStrongTrend = g_trendManager.IsStrongTrend();
+   ENUM_CROSS_STATE m15State = g_trendManager.GetM15CrossState();
+   ENUM_CROSS_STATE m5State = g_trendManager.GetM5CrossState();
+   string m1Position = g_trendManager.GetM1Position();
+   
+   // ─── DEBUG: LOG ALL TREND MANAGER DATA ───
+   LOG_DEBUG("═══════════════════════════════════════════════════════════", g_debugMain);
+   LOG_DEBUG("📊 TREND MANAGER DATA:", g_debugMain);
+   LOG_DEBUG("   Trend Direction: " + trendDirection, g_debugMain);
+   LOG_DEBUG("   Trend Strength: " + DoubleToString(trendStrength, 1) + "%", g_debugMain);
+   LOG_DEBUG("   Trend Confidence: " + DoubleToString(trendConfidence, 1) + "%", g_debugMain);
+   LOG_DEBUG("   Is Strong Trend: " + (isStrongTrend ? "YES" : "NO"), g_debugMain);
+   LOG_DEBUG("   Is M1 Compatible: " + (isM1Compatible ? "YES" : "NO"), g_debugMain);
+   LOG_DEBUG("   Crossover Priority: " + IntegerToString(crossoverPriority), g_debugMain);
+   LOG_DEBUG("   Crossover Scenario: " + crossoverScenario, g_debugMain);
+   LOG_DEBUG("   Golden Cross: " + (isGoldenCross ? "✅ YES" : "❌ NO"), g_debugMain);
+   LOG_DEBUG("   Death Cross: " + (isDeathCross ? "✅ YES" : "❌ NO"), g_debugMain);
+   LOG_DEBUG("   M15 21 vs 89 State: " + GetStateName(m15State), g_debugMain);
+   LOG_DEBUG("   M5 21 vs 89 State: " + GetStateName(m5State), g_debugMain);
+   LOG_DEBUG("   M1 Position: " + m1Position, g_debugMain);
+   LOG_DEBUG("   M1 Distance: " + DoubleToString(g_trendManager.GetLastCrossover().m1_distance, 1) + " pts", g_debugMain);
+   LOG_DEBUG("═══════════════════════════════════════════════════════════", g_debugMain);
+   
+   // ─── DEBUG: LOG MA VALUES ───
+   LOG_DEBUG("📊 MA VALUES:", g_debugMain);
+   LOG_DEBUG("   M15 MA21: " + DoubleToString(g_trendManager.GetMA21_M15(), _Digits), g_debugMain);
+   LOG_DEBUG("   M15 MA89: " + DoubleToString(g_trendManager.GetMA89_M15(), _Digits), g_debugMain);
+   LOG_DEBUG("   M15 MA200: " + DoubleToString(g_trendManager.GetMA200_M15(), _Digits), g_debugMain);
+   LOG_DEBUG("   M15 21-89 Diff: " + DoubleToString(g_trendManager.GetMA21_M15() - g_trendManager.GetMA89_M15(), _Digits), g_debugMain);
+   LOG_DEBUG("   M5 MA21: " + DoubleToString(g_trendManager.GetMA21_M5(), _Digits), g_debugMain);
+   LOG_DEBUG("   M5 MA89: " + DoubleToString(g_trendManager.GetMA89_M5(), _Digits), g_debugMain);
+   LOG_DEBUG("   M5 21-89 Diff: " + DoubleToString(g_trendManager.GetMA21_M5() - g_trendManager.GetMA89_M5(), _Digits), g_debugMain);
+   LOG_DEBUG("   M1 MA21: " + DoubleToString(g_trendManager.GetMA21_M1(), _Digits), g_debugMain);
+   LOG_DEBUG("   Current Price: " + DoubleToString(g_trendManager.GetCurrentPrice(), _Digits), g_debugMain);
+   LOG_DEBUG("   Price vs M1 MA21: " + DoubleToString(g_trendManager.GetCurrentPrice() - g_trendManager.GetMA21_M1(), _Digits), g_debugMain);
+   LOG_DEBUG("═══════════════════════════════════════════════════════════", g_debugMain);
+   
+   // ─── DETERMINE ENTRY STATUS BASED ON RECOMMENDATION ───
+   bool isEntrySignal = (crossoverPriority <= 3);
+   bool isStrongEntry = (crossoverPriority == 1);
+   bool isDipEntry = (crossoverPriority == 2);
+   bool isPullbackEntry = (crossoverPriority == 3);
+   bool isWatchSignal = (crossoverPriority == 4);
+   
+   LOG_DEBUG("📊 Entry Status:", g_debugMain);
+   LOG_DEBUG("   isEntrySignal: " + (isEntrySignal ? "YES" : "NO"), g_debugMain);
+   LOG_DEBUG("   isStrongEntry: " + (isStrongEntry ? "YES" : "NO"), g_debugMain);
+   LOG_DEBUG("   isDipEntry: " + (isDipEntry ? "YES" : "NO"), g_debugMain);
+   LOG_DEBUG("   isPullbackEntry: " + (isPullbackEntry ? "YES" : "NO"), g_debugMain);
+   LOG_DEBUG("   isWatchSignal: " + (isWatchSignal ? "YES" : "NO"), g_debugMain);
+   
+   // ─── BUILD RECOMMENDATION STATUS ───
+   string recStatus = "";
+   
+   if(isEntrySignal)
+   {
+      if(isStrongEntry)
+         recStatus = "STRONG ENTRY (" + crossoverScenario + ")";
+      else if(isDipEntry)
+         recStatus = "DIP ENTRY (" + crossoverScenario + ")";
+      else if(isPullbackEntry)
+         recStatus = "PULLBACK ENTRY (" + crossoverScenario + ")";
+   }
+   else if(isWatchSignal)
+   {
+      recStatus = "WATCH (" + crossoverScenario + ")";
+   }
    else
-      tradeDirection = 0;
-   
-   g_componentManager.SetTradeDirection(tradeDirection);
-   
-   // Check trend conditions
-   if(!g_trendManager.ShouldAllowEntries())
    {
-      if(g_dashboard != NULL)
-         g_dashboard.SetCheckFailed(1, "Trend: No entries allowed");
-      return;
+      recStatus = "WAIT - No clear signal";
    }
    
-   if(trendResult.strength < InpMinTrendStrength)
+   LOG_DEBUG("📊 Recommendation Status: " + recStatus, g_debugMain);
+   
+   // ─── CHECK IF TREND MANAGER RECOMMENDATION IS VALID ───
+   if(!isEntrySignal)
    {
+      LOG_DEBUG("❌ Recommendation is NOT an entry signal", g_debugMain);
       if(g_dashboard != NULL)
-         g_dashboard.SetCheckFailed(1, "Trend too weak: " + DoubleToString(trendResult.strength, 1) + "% < " + DoubleToString(InpMinTrendStrength, 1) + "%");
+      {
+         if(isWatchSignal)
+            g_dashboard.SetCheckFailed(1, "Recommendation: " + recStatus + " - Monitor for entry");
+         else
+            g_dashboard.SetCheckFailed(1, "Recommendation: " + recStatus + " - No clear direction");
+      }
+      LOG_DEBUG("⛔ CheckSignal EXITING - No entry signal", g_debugMain);
       return;
    }
+   LOG_DEBUG("✅ Recommendation is an entry signal", g_debugMain);
    
-   if(InpRequireStrongTrend && !g_trendManager.IsStrongTrend())
+   // ─── CHECK TREND STRENGTH ───
+   LOG_DEBUG("📊 Checking trend strength against InpMinTrendStrength (" + DoubleToString(InpMinTrendStrength, 1) + "%)", g_debugMain);
+   if(trendStrength < InpMinTrendStrength)
    {
+      LOG_DEBUG("❌ Trend too weak: " + DoubleToString(trendStrength, 1) + "% < " + DoubleToString(InpMinTrendStrength, 1) + "%", g_debugMain);
       if(g_dashboard != NULL)
-         g_dashboard.SetCheckFailed(1, "Trend not strong enough: " + DoubleToString(trendResult.strength, 1) + "%");
+         g_dashboard.SetCheckFailed(1, "Trend too weak: " + DoubleToString(trendStrength, 1) + "% < " + DoubleToString(InpMinTrendStrength, 1) + "%");
+      LOG_DEBUG("⛔ CheckSignal EXITING - Trend too weak", g_debugMain);
       return;
    }
+   LOG_DEBUG("✅ Trend strength passed", g_debugMain);
    
-   if(!InpAllowNeutralTrend && trendResult.direction == "NEUTRAL")
+   // ─── CHECK STRONG TREND REQUIREMENT ───
+   if(InpRequireStrongTrend && !isStrongTrend)
    {
+      LOG_DEBUG("❌ Trend not strong enough: " + DoubleToString(trendStrength, 1) + "% (requires 60%+)", g_debugMain);
+      if(g_dashboard != NULL)
+         g_dashboard.SetCheckFailed(1, "Trend not strong enough: " + DoubleToString(trendStrength, 1) + "%");
+      LOG_DEBUG("⛔ CheckSignal EXITING - Not strong enough", g_debugMain);
+      return;
+   }
+   LOG_DEBUG("✅ Strong trend check passed", g_debugMain);
+   
+   // ─── CHECK NEUTRAL TREND ALLOWANCE ───
+   if(!InpAllowNeutralTrend && trendDirection == "NEUTRAL")
+   {
+      LOG_DEBUG("❌ Trend: NEUTRAL not allowed", g_debugMain);
       if(g_dashboard != NULL)
          g_dashboard.SetCheckFailed(1, "Trend: NEUTRAL not allowed");
+      LOG_DEBUG("⛔ CheckSignal EXITING - Neutral not allowed", g_debugMain);
       return;
    }
+   LOG_DEBUG("✅ Neutral trend check passed", g_debugMain);
    
-   // ✅ TREND PASSED
+   // ─── CHECK M1 COMPATIBILITY ───
+   if(!isM1Compatible)
+   {
+      LOG_DEBUG("❌ M1 not compatible: Strength " + DoubleToString(trendStrength, 1) + "% < Moderate threshold", g_debugMain);
+      if(g_dashboard != NULL)
+         g_dashboard.SetCheckFailed(1, "M1 not compatible: Strength " + DoubleToString(trendStrength, 1) + "% < threshold");
+      LOG_DEBUG("⛔ CheckSignal EXITING - M1 not compatible", g_debugMain);
+      return;
+   }
+   LOG_DEBUG("✅ M1 compatibility passed", g_debugMain);
+   
+   // ✅ TREND MANAGER RECOMMENDATION PASSED
+   string passMessage = "Recommendation: " + recStatus + " | " + trendDirection + " (" + DoubleToString(trendStrength, 1) + "%)";
+   if(isGoldenCross) passMessage += " | GOLDEN CROSS!";
+   if(isDeathCross) passMessage += " | DEATH CROSS!";
+   LOG_DEBUG("✅ RECOMMENDATION PASSED: " + passMessage, g_debugMain);
    if(g_dashboard != NULL)
-      g_dashboard.SetCheckPassed(1, "Trend: " + trendResult.direction + " (" + DoubleToString(trendResult.strength, 1) + "%)");
+      g_dashboard.SetCheckPassed(1, passMessage);
    UpdateDashboard();
    
-   // ═══ STEP 2: PULLBACK CHECK ═══
+   // ═══════════════════════════════════════════════════════════════
+   // ═══ STEP 2: CROSSOVER DETAIL CHECK ═══
+   // ═══════════════════════════════════════════════════════════════
+   LOG_DEBUG("📌 STEP 2: Crossover Detail Check", g_debugMain);
+   
    if(g_dashboard != NULL)
-      g_dashboard.SetCheckPending(2, "Checking range and zone...");
+      g_dashboard.SetCheckPending(2, "Crossover: " + crossoverScenario + " (P" + IntegerToString(crossoverPriority) + ")");
+   UpdateDashboard();
+   
+   // Crossover already passed in step 1, but we log the details
+   string crossoverDetail = "Crossover: " + crossoverScenario + " (P" + IntegerToString(crossoverPriority) + ")";
+   if(isGoldenCross) crossoverDetail += " | GOLDEN CROSS!";
+   else if(isDeathCross) crossoverDetail += " | DEATH CROSS!";
+   LOG_DEBUG("✅ Crossover passed: " + crossoverDetail, g_debugMain);
+   if(g_dashboard != NULL)
+      g_dashboard.SetCheckPassed(2, crossoverDetail);
+   UpdateDashboard();
+   
+   // ═══════════════════════════════════════════════════════════════
+   // ═══ STEP 3: PULLBACK CHECK ═══
+   // ═══════════════════════════════════════════════════════════════
+   LOG_DEBUG("📌 STEP 3: Pullback Check", g_debugMain);
+   
+   if(g_dashboard != NULL)
+      g_dashboard.SetCheckPending(3, "Checking range and zone...");
    UpdateDashboard();
    
    double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    g_componentManager.SetCurrentPrice(currentPrice);
+   LOG_DEBUG("   Current Price: " + DoubleToString(currentPrice, _Digits), g_debugMain);
    
    if(g_pullback != NULL && g_trendManager != NULL)
       g_pullback.SetTrendManager(g_trendManager);
@@ -943,19 +1288,29 @@ void CheckSignal()
    SPullbackAnalysisResult pbResult = g_pullback.GetPullbackAnalysis();
    int trend = g_pullback.GetTrendPublic();
    
+   LOG_DEBUG("   Pullback Range High: " + DoubleToString(pbResult.rangeHigh, _Digits), g_debugMain);
+   LOG_DEBUG("   Pullback Range Low: " + DoubleToString(pbResult.rangeLow, _Digits), g_debugMain);
+   LOG_DEBUG("   Pullback Percent: " + DoubleToString(pbResult.pullbackPercent, 1) + "%", g_debugMain);
+   LOG_DEBUG("   Pullback Zone: " + pbResult.zoneCategory, g_debugMain);
+   
    if(!pbResult.showOnChart || pbResult.rangeHigh == 0 || pbResult.rangeLow == 0)
    {
+      LOG_DEBUG("❌ Pullback: No valid range", g_debugMain);
       if(g_dashboard != NULL)
-         g_dashboard.SetCheckFailed(2, "Pullback: No valid range");
+         g_dashboard.SetCheckFailed(3, "Pullback: No valid range");
+      LOG_DEBUG("⛔ CheckSignal EXITING - No valid range", g_debugMain);
       return;
    }
    
    if(pbResult.rangeHigh <= pbResult.rangeLow)
    {
+      LOG_DEBUG("❌ Pullback: Invalid range (High <= Low)", g_debugMain);
       if(g_dashboard != NULL)
-         g_dashboard.SetCheckFailed(2, "Pullback: Invalid range");
+         g_dashboard.SetCheckFailed(3, "Pullback: Invalid range");
+      LOG_DEBUG("⛔ CheckSignal EXITING - Invalid range", g_debugMain);
       return;
    }
+   LOG_DEBUG("✅ Pullback range valid", g_debugMain);
    
    // Check No Go Zone
    if(g_pullback != NULL && g_pullback.IsNoGoZone(pbResult.pullbackPercent))
@@ -968,19 +1323,28 @@ void CheckSignal()
       else
          noGoReason = "NO GO ZONE";
       
+      LOG_DEBUG("❌ Pullback: NO GO ZONE - " + noGoReason + " (" + DoubleToString(pbResult.pullbackPercent, 1) + "%)", g_debugMain);
       if(g_dashboard != NULL)
-         g_dashboard.SetCheckFailed(2, "Pullback: NO GO ZONE - " + noGoReason + " (" + DoubleToString(pbResult.pullbackPercent, 1) + "%)");
+         g_dashboard.SetCheckFailed(3, "Pullback: NO GO ZONE - " + noGoReason + " (" + DoubleToString(pbResult.pullbackPercent, 1) + "%)");
+      LOG_DEBUG("⛔ CheckSignal EXITING - No Go Zone", g_debugMain);
       return;
    }
+   LOG_DEBUG("✅ Pullback not in No Go Zone", g_debugMain);
    
    // ✅ PULLBACK PASSED
+   string pbPassMsg = "Pullback: " + pbResult.zoneCategory + " (" + DoubleToString(pbResult.pullbackPercent, 1) + "%)";
+   LOG_DEBUG("✅ " + pbPassMsg, g_debugMain);
    if(g_dashboard != NULL)
-      g_dashboard.SetCheckPassed(2, "Pullback: " + pbResult.zoneCategory + " (" + DoubleToString(pbResult.pullbackPercent, 1) + "%)");
+      g_dashboard.SetCheckPassed(3, pbPassMsg);
    UpdateDashboard();
    
-   // ═══ STEP 3: CONFIDENCE CHECK ═══
+   // ═══════════════════════════════════════════════════════════════
+   // ═══ STEP 4: CONFIDENCE CHECK ═══
+   // ═══════════════════════════════════════════════════════════════
+   LOG_DEBUG("📌 STEP 4: Confidence Check", g_debugMain);
+   
    if(g_dashboard != NULL)
-      g_dashboard.SetCheckPending(3, "Checking confidence thresholds...");
+      g_dashboard.SetCheckPending(4, "Checking confidence thresholds...");
    UpdateDashboard();
    
    SMarketAnalysis analysis = g_componentManager.AnalyzeMarket();
@@ -998,79 +1362,115 @@ void CheckSignal()
       analysis.overallConfidence = adjustedConfidence;
    }
    
-   double finalConfidence = analysis.overallConfidence;
-   double thresholdToUse = GetThresholdForDirection(analysis.overallSentiment);
-   
-   if(analysis.overallSentiment == "NEUTRAL")
+   // Use TrendManager direction for final sentiment
+   string finalSentiment = trendDirection;
+   if(finalSentiment == "NEUTRAL")
    {
+      finalSentiment = analysis.overallSentiment;
+   }
+   
+   double thresholdToUse = GetThresholdForDirection(finalSentiment);
+   
+   LOG_DEBUG("   Final Sentiment: " + finalSentiment, g_debugMain);
+   LOG_DEBUG("   Overall Confidence: " + DoubleToString(analysis.overallConfidence, 1) + "%", g_debugMain);
+   LOG_DEBUG("   Threshold: " + DoubleToString(thresholdToUse, 1) + "%", g_debugMain);
+   LOG_DEBUG("   Portfolio Boost: " + StringFormat("%+.1f%%", portfolioBoost), g_debugMain);
+   
+   if(finalSentiment == "NEUTRAL")
+   {
+      LOG_DEBUG("❌ Confidence: NEUTRAL sentiment - no clear direction", g_debugMain);
       if(g_dashboard != NULL)
-         g_dashboard.SetCheckFailed(3, "Confidence: NEUTRAL sentiment - no clear direction");
+         g_dashboard.SetCheckFailed(4, "Confidence: NEUTRAL sentiment - no clear direction");
+      LOG_DEBUG("⛔ CheckSignal EXITING - Neutral sentiment", g_debugMain);
       return;
    }
    
-   if(finalConfidence < thresholdToUse)
+   if(analysis.overallConfidence < thresholdToUse)
    {
+      LOG_DEBUG("❌ Confidence too low: " + DoubleToString(analysis.overallConfidence, 1) + "% < " + DoubleToString(thresholdToUse, 1) + "%", g_debugMain);
       if(g_dashboard != NULL)
-         g_dashboard.SetCheckFailed(3, "Confidence too low: " + DoubleToString(finalConfidence, 1) + "% < " + DoubleToString(thresholdToUse, 1) + "%");
+         g_dashboard.SetCheckFailed(4, "Confidence too low: " + DoubleToString(analysis.overallConfidence, 1) + "% < " + DoubleToString(thresholdToUse, 1) + "%");
+      LOG_DEBUG("⛔ CheckSignal EXITING - Confidence too low", g_debugMain);
       return;
    }
+   LOG_DEBUG("✅ Confidence passed", g_debugMain);
    
    // Check trend alignment
    bool signalAlignsWithTrend = false;
    
-   if(analysis.overallSentiment == "BULLISH" && 
-      (trendResult.direction == "BULLISH" || 
-       (trendResult.direction == "NEUTRAL" && InpAllowNeutralTrend)))
+   if(finalSentiment == "BULLISH" && 
+      (trendDirection == "BULLISH" || 
+       (trendDirection == "NEUTRAL" && InpAllowNeutralTrend)))
    {
       signalAlignsWithTrend = true;
    }
-   else if(analysis.overallSentiment == "BEARISH" && 
-           (trendResult.direction == "BEARISH" || 
-            (trendResult.direction == "NEUTRAL" && InpAllowNeutralTrend)))
+   else if(finalSentiment == "BEARISH" && 
+           (trendDirection == "BEARISH" || 
+            (trendDirection == "NEUTRAL" && InpAllowNeutralTrend)))
    {
       signalAlignsWithTrend = true;
    }
    
+   LOG_DEBUG("   Signal aligns with trend: " + (signalAlignsWithTrend ? "YES" : "NO"), g_debugMain);
+   
    if(!signalAlignsWithTrend)
    {
+      LOG_DEBUG("❌ Confidence: Signal does not align with trend", g_debugMain);
       if(g_dashboard != NULL)
-         g_dashboard.SetCheckFailed(3, "Confidence: Signal does not align with trend");
+         g_dashboard.SetCheckFailed(4, "Confidence: Signal does not align with trend");
+      LOG_DEBUG("⛔ CheckSignal EXITING - Signal doesn't align", g_debugMain);
       return;
    }
    
    // ✅ CONFIDENCE PASSED
+   string confMessage = "Confidence: " + DoubleToString(analysis.overallConfidence, 1) + "% ≥ " + DoubleToString(thresholdToUse, 1) + "%";
+   if(portfolioBoost != 0)
+      confMessage += " | Boost: " + StringFormat("%+.1f%%", portfolioBoost);
+   LOG_DEBUG("✅ " + confMessage, g_debugMain);
    if(g_dashboard != NULL)
-      g_dashboard.SetCheckPassed(3, "Confidence: " + DoubleToString(finalConfidence, 1) + "% ≥ " + DoubleToString(thresholdToUse, 1) + "%");
+      g_dashboard.SetCheckPassed(4, confMessage);
    UpdateDashboard();
    
-   // ═══ STEP 4: RISK CHECK ═══
+   // ═══════════════════════════════════════════════════════════════
+   // ═══ STEP 5: RISK CHECK ═══
+   // ═══════════════════════════════════════════════════════════════
+   LOG_DEBUG("📌 STEP 5: Risk Check", g_debugMain);
+   
    if(g_dashboard != NULL)
-      g_dashboard.SetCheckPending(4, "Checking risk limits...");
+      g_dashboard.SetCheckPending(5, "Checking risk limits...");
    UpdateDashboard();
    
    if(g_riskManager != NULL && !g_riskManager.CheckRiskLimits())
    {
+      LOG_DEBUG("❌ Risk: " + g_riskManager.GetStatusMessage(), g_debugMain);
       if(g_dashboard != NULL)
-         g_dashboard.SetCheckFailed(4, "Risk: " + g_riskManager.GetStatusMessage());
+         g_dashboard.SetCheckFailed(5, "Risk: " + g_riskManager.GetStatusMessage());
+      LOG_DEBUG("⛔ CheckSignal EXITING - Risk check failed", g_debugMain);
       return;
    }
    
    // ✅ RISK PASSED
    if(g_riskManager != NULL)
    {
+      LOG_DEBUG("✅ Risk: " + g_riskManager.GetStatusMessage(), g_debugMain);
       if(g_dashboard != NULL)
-         g_dashboard.SetCheckPassed(4, "Risk: " + g_riskManager.GetStatusMessage());
+         g_dashboard.SetCheckPassed(5, "Risk: " + g_riskManager.GetStatusMessage());
    }
    else
    {
+      LOG_DEBUG("✅ Risk: Ready", g_debugMain);
       if(g_dashboard != NULL)
-         g_dashboard.SetCheckPassed(4, "Risk: Ready");
+         g_dashboard.SetCheckPassed(5, "Risk: Ready");
    }
    UpdateDashboard();
    
-   // ═══ STEP 5: RR CHECK ═══
+   // ═══════════════════════════════════════════════════════════════
+   // ═══ STEP 6: RR CHECK ═══
+   // ═══════════════════════════════════════════════════════════════
+   LOG_DEBUG("📌 STEP 6: RR Check", g_debugMain);
+   
    if(g_dashboard != NULL)
-      g_dashboard.SetCheckPending(5, "Calculating risk-reward ratio...");
+      g_dashboard.SetCheckPending(6, "Calculating risk-reward ratio...");
    UpdateDashboard();
    
    double rangeHigh = pbResult.rangeHigh;
@@ -1079,10 +1479,16 @@ void CheckSignal()
    double pullbackPercent = pbResult.pullbackPercent;
    string zoneCategory = pbResult.zoneCategory;
    
+   LOG_DEBUG("   Range High: " + DoubleToString(rangeHigh, _Digits), g_debugMain);
+   LOG_DEBUG("   Range Low: " + DoubleToString(rangeLow, _Digits), g_debugMain);
+   LOG_DEBUG("   Range Size: " + DoubleToString(rangeSize, _Digits), g_debugMain);
+   
    if(rangeHigh == 0 || rangeLow == 0 || rangeHigh <= rangeLow)
    {
+      LOG_DEBUG("❌ RR Check: Invalid range", g_debugMain);
       if(g_dashboard != NULL)
-         g_dashboard.SetCheckFailed(5, "RR Check: Invalid range");
+         g_dashboard.SetCheckFailed(6, "RR Check: Invalid range");
+      LOG_DEBUG("⛔ CheckSignal EXITING - Invalid range", g_debugMain);
       return;
    }
    
@@ -1091,23 +1497,33 @@ void CheckSignal()
    PrescribedTrade trade;
    ZeroMemory(trade);
    
-   if(analysis.overallSentiment == "BULLISH")
+   // ─── DETERMINE TRADE DIRECTION ───
+   // Use TrendManager direction first, fallback to ComponentManager
+   if(trendDirection == "BULLISH")
+      trade.signal = 1;
+   else if(trendDirection == "BEARISH")
+      trade.signal = -1;
+   else if(analysis.overallSentiment == "BULLISH")
       trade.signal = 1;
    else if(analysis.overallSentiment == "BEARISH")
       trade.signal = -1;
    else
       trade.signal = 0;
    
+   LOG_DEBUG("   Trade Signal: " + (trade.signal == 1 ? "BUY" : trade.signal == -1 ? "SELL" : "NONE"), g_debugMain);
+   
    if(trade.signal == 0)
    {
+      LOG_DEBUG("❌ RR Check: No signal direction", g_debugMain);
       if(g_dashboard != NULL)
-         g_dashboard.SetCheckFailed(5, "RR Check: No signal direction");
+         g_dashboard.SetCheckFailed(6, "RR Check: No signal direction");
+      LOG_DEBUG("⛔ CheckSignal EXITING - No signal direction", g_debugMain);
       return;
    }
    
    trade.entryPrice = currentPrice;
    
-   // Set Stop Loss with Buffer
+   // ─── SET STOP LOSS ───
    double slBuffer = InpSLBufferPoints * pointValue;
    
    if(trade.signal == 1)
@@ -1115,45 +1531,63 @@ void CheckSignal()
    else
       trade.stopLoss = rangeHigh + slBuffer;
    
+   LOG_DEBUG("   SL Buffer: " + DoubleToString(slBuffer, _Digits) + " (" + IntegerToString(InpSLBufferPoints) + " points)", g_debugMain);
+   LOG_DEBUG("   Stop Loss: " + DoubleToString(trade.stopLoss, _Digits), g_debugMain);
+   
    if(trade.stopLoss <= 0)
    {
+      LOG_DEBUG("❌ RR Check: Invalid SL level", g_debugMain);
       if(g_dashboard != NULL)
-         g_dashboard.SetCheckFailed(5, "RR Check: Invalid SL level");
+         g_dashboard.SetCheckFailed(6, "RR Check: Invalid SL level");
+      LOG_DEBUG("⛔ CheckSignal EXITING - Invalid SL", g_debugMain);
       return;
    }
    
    double riskAmount = MathAbs(trade.stopLoss - trade.entryPrice);
    double riskPips = riskAmount / pointValue;
    
+   LOG_DEBUG("   Risk Amount: " + DoubleToString(riskAmount, _Digits) + " (" + DoubleToString(riskPips, 1) + " pips)", g_debugMain);
+   
    if(riskAmount <= 0)
    {
+      LOG_DEBUG("❌ RR Check: Invalid risk amount", g_debugMain);
       if(g_dashboard != NULL)
-         g_dashboard.SetCheckFailed(5, "RR Check: Invalid risk amount");
+         g_dashboard.SetCheckFailed(6, "RR Check: Invalid risk amount");
+      LOG_DEBUG("⛔ CheckSignal EXITING - Invalid risk", g_debugMain);
       return;
    }
    
    double primaryTP = 0, rr = 0;
-   bool rrPassed = CalculateTakeProfits(trade.signal, currentPrice, rangeHigh, rangeLow, 
+   bool rrPassed = CalculateTakeProfits(trade.signal, trade.entryPrice, rangeHigh, rangeLow, 
                                        pullbackPercent, riskAmount, primaryTP, rr,
                                        portfolioBoost);
    
+   LOG_DEBUG("   RR Calculated: " + DoubleToString(rr, 2) + ":1", g_debugMain);
+   LOG_DEBUG("   RR Passed: " + (rrPassed ? "YES" : "NO"), g_debugMain);
+   
    if(!rrPassed)
    {
+      LOG_DEBUG("❌ RR Check: " + DoubleToString(rr, 2) + ":1 < " + DoubleToString(InpMinRR, 1) + ":1 minimum", g_debugMain);
       if(g_dashboard != NULL)
-         g_dashboard.SetCheckFailed(5, "RR Check: " + DoubleToString(rr, 2) + ":1 < " + DoubleToString(InpMinRR, 1) + ":1 minimum");
+         g_dashboard.SetCheckFailed(6, "RR Check: " + DoubleToString(rr, 2) + ":1 < " + DoubleToString(InpMinRR, 1) + ":1 minimum");
+      LOG_DEBUG("⛔ CheckSignal EXITING - RR too low", g_debugMain);
       return;
    }
    
    if(primaryTP <= 0)
    {
+      LOG_DEBUG("❌ RR Check: Invalid TP level", g_debugMain);
       if(g_dashboard != NULL)
-         g_dashboard.SetCheckFailed(5, "RR Check: Invalid TP level");
+         g_dashboard.SetCheckFailed(6, "RR Check: Invalid TP level");
+      LOG_DEBUG("⛔ CheckSignal EXITING - Invalid TP", g_debugMain);
       return;
    }
    
    // ✅ RR CHECK PASSED
+   string rrPassMsg = "RR Check: " + DoubleToString(rr, 2) + ":1 ≥ " + DoubleToString(InpMinRR, 1) + ":1";
+   LOG_DEBUG("✅ " + rrPassMsg, g_debugMain);
    if(g_dashboard != NULL)
-      g_dashboard.SetCheckPassed(5, "RR Check: " + DoubleToString(rr, 2) + ":1 ≥ " + DoubleToString(InpMinRR, 1) + ":1");
+      g_dashboard.SetCheckPassed(6, rrPassMsg);
    UpdateDashboard();
    
    trade.takeProfit = primaryTP;
@@ -1164,25 +1598,72 @@ void CheckSignal()
    trade.riskRewardRatio = rewardAmount / riskAmount;
    trade.riskRewardRatio2 = 0;
    
+   LOG_DEBUG("   Take Profit: " + DoubleToString(trade.takeProfit, _Digits) + " (" + DoubleToString(rewardPips, 1) + " pips)", g_debugMain);
+   LOG_DEBUG("   Reward Amount: " + DoubleToString(rewardAmount, _Digits), g_debugMain);
+   
    // Calculate partial level
    if(trade.signal == 1)
-      trade.partialLevel75 = currentPrice + (trade.takeProfit - currentPrice) * 0.75;
+      trade.partialLevel75 = trade.entryPrice + (trade.takeProfit - trade.entryPrice) * 0.75;
    else
-      trade.partialLevel75 = currentPrice - (currentPrice - trade.takeProfit) * 0.75;
+      trade.partialLevel75 = trade.entryPrice - (trade.entryPrice - trade.takeProfit) * 0.75;
    
    trade.pullbackPercent = pbResult.pullbackPercent;
    trade.pullbackScore = (int)pbResult.pullbackScore;
-   trade.entryReason = zoneCategory + " pullback - Boost " + StringFormat("%+.1f%%", portfolioBoost);
+   trade.entryReason = zoneCategory + " pullback - " + crossoverScenario + " (P" + IntegerToString(crossoverPriority) + ") - Boost " + StringFormat("%+.1f%%", portfolioBoost);
    
-   // ═══ STEP 6: EXECUTION ═══
+   // ─── LOG TRADE DETAILS ───
+   LOG_TRADE("═══════════════════════════════════════════════════════════");
+   LOG_TRADE("✅✅✅ TRADE SIGNAL ACCEPTED ✅✅✅");
+   LOG_TRADE("   Direction: " + (trade.signal == 1 ? "LONG (BUY)" : "SHORT (SELL)"));
+   LOG_TRADE("   Recommendation: " + crossoverScenario + " (Priority " + IntegerToString(crossoverPriority) + ")");
+   if(isGoldenCross) LOG_TRADE("   GOLDEN CROSS DETECTED!");
+   if(isDeathCross) LOG_TRADE("   DEATH CROSS DETECTED!");
+   LOG_TRADE("   Trend: " + trendDirection + " | Strength: " + DoubleToString(trendStrength, 1) + "%");
+   LOG_TRADE("   M1 Compatible: " + (isM1Compatible ? "YES" : "NO"));
+   LOG_TRADE("   Entry: " + DoubleToString(trade.entryPrice, _Digits));
+   LOG_TRADE("   Stop Loss: " + DoubleToString(trade.stopLoss, _Digits) + 
+            " (" + DoubleToString(riskPips, 1) + " pips risk)");
+   LOG_TRADE("   Take Profit: " + DoubleToString(trade.takeProfit, _Digits) + 
+            " (" + DoubleToString(rewardPips, 1) + " pips reward)");
+   LOG_TRADE("   Risk-Reward: " + DoubleToString(trade.riskRewardRatio, 2) + ":1");
+   LOG_TRADE("   Pullback Zone: " + zoneCategory + " (" + 
+            DoubleToString(pullbackPercent, 1) + "%)");
+   LOG_TRADE("   Confidence: " + DoubleToString(analysis.overallConfidence, 1) + "%");
+   if(portfolioBoost != 0)
+      LOG_TRADE("   Portfolio Boost: " + StringFormat("%+.1f%%", portfolioBoost));
+   
+   if(g_riskManager != NULL)
+   {
+      LOG_TRADE("   Risk Status: " + g_riskManager.GetStatusMessage());
+   }
+   
+   if(g_sessionManager != NULL)
+   {
+      LOG_TRADE("   Session: " + g_sessionManager.GetSessionName());
+   }
+   LOG_TRADE("═══════════════════════════════════════════════════════════");
+   
+   // ═══════════════════════════════════════════════════════════════
+   // ═══ STEP 7: EXECUTION ═══
+   // ═══════════════════════════════════════════════════════════════
+   LOG_DEBUG("📌 STEP 7: Execution", g_debugMain);
+   
    if(g_dashboard != NULL)
-      g_dashboard.SetCheckPending(6, "Executing trade...");
+      g_dashboard.SetCheckPending(7, "Executing trade...");
    UpdateDashboard();
    
-   // Calculate Lot Size
+   // ─── CALCULATE LOT SIZE ───
    double lotSize = InpLotSize;
    if(g_riskManager != NULL)
       lotSize = g_riskManager.CalculateLotSize(trade);
+   
+   // ─── ADJUST LOT SIZE BASED ON RECOMMENDATION PRIORITY ───
+   if(isStrongEntry)
+      lotSize = lotSize * 1.0;      // 100% - Full position
+   else if(isDipEntry)
+      lotSize = lotSize * 0.85;     // 85% - Slightly reduced
+   else if(isPullbackEntry)
+      lotSize = lotSize * 0.65;     // 65% - Reduced position
    
    double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
    double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
@@ -1193,38 +1674,46 @@ void CheckSignal()
    if(stepLot > 0)
       lotSize = MathRound(lotSize / stepLot) * stepLot;
    
-   // Execute Trade
+   LOG_DEBUG("   Lot Size: " + DoubleToString(lotSize, 2) + " (Priority " + IntegerToString(crossoverPriority) + ")", g_debugMain);
+   
+   // ─── EXECUTE TRADE ───
    if(InpEnableTrading && g_positionManager != NULL)
    {
-      bool executed = g_positionManager.ExecuteTrade(trade, lotSize);
-      if(executed)
+      LOG_DEBUG("   Executing trade...", g_debugMain);
+      bool execResult = g_positionManager.ExecuteTrade(trade, lotSize);
+      if(execResult)
       {
          LOG_TRADE("✅✅✅ TRADE EXECUTED SUCCESSFULLY ✅✅✅");
+         LOG_DEBUG("✅ Trade executed successfully", g_debugMain);
          
          if(g_riskManager != NULL)
             g_riskManager.OnTradeExecuted();
          
-         // ✅ EXECUTION SUCCESSFUL
          string dirText = trade.signal == 1 ? "BUY" : "SELL";
          if(g_dashboard != NULL)
          {
-            g_dashboard.SetCheckPassed(6, "SUCCESSFUL - " + dirText + " @ " + DoubleToString(trade.entryPrice, _Digits));
+            g_dashboard.SetCheckPassed(7, "SUCCESSFUL - " + dirText + " @ " + DoubleToString(trade.entryPrice, _Digits));
             g_dashboard.SetTradeExecuted();
          }
       }
       else
       {
          LOG_ERROR("❌❌❌ TRADE EXECUTION FAILED ❌❌❌");
+         LOG_DEBUG("❌ Trade execution failed", g_debugMain);
          if(g_dashboard != NULL)
-            g_dashboard.SetCheckFailed(6, "Execution FAILED");
+            g_dashboard.SetCheckFailed(7, "Execution FAILED");
       }
    }
    else
    {
       LOG_DEBUG("⚠️ Trading disabled - Signal detected but not executed", g_debugMain);
       if(g_dashboard != NULL)
-         g_dashboard.SetCheckFailed(6, "Trading disabled");
+         g_dashboard.SetCheckFailed(7, "Trading disabled");
    }
+   
+   LOG_DEBUG("═══════════════════════════════════════════════════════════", g_debugMain);
+   LOG_DEBUG("🔍 CHECK SIGNAL COMPLETE", g_debugMain);
+   LOG_DEBUG("═══════════════════════════════════════════════════════════", g_debugMain);
    
    UpdateDashboard();
 }
@@ -1476,7 +1965,7 @@ void ShowPullbackInfo()
                " (" + g_sessionManager.GetSessionHours() + ")", g_debugMain);
    }
    
-   // ═══ NEW: SHOW RISK MANAGER STATUS ═══
+   // ═══ SHOW RISK MANAGER STATUS ═══
    if(g_riskManager != NULL)
    {
       LOG_INFO("Risk Status: " + g_riskManager.GetStatusMessage(), g_debugMain);
@@ -1564,7 +2053,7 @@ void ShowScenario()
                " (" + g_sessionManager.GetSessionHours() + ")", g_debugMain);
    }
    
-   // ═══ NEW: SHOW RISK MANAGER STATUS ═══
+   // ═══ SHOW RISK MANAGER STATUS ═══
    if(g_riskManager != NULL)
    {
       LOG_INFO("   Risk: " + g_riskManager.GetStatusMessage(), g_debugMain);
@@ -1577,7 +2066,64 @@ void ShowScenario()
    LOG_INFO("=========================", g_debugMain);
 }
 
-// ═══ NEW: RISK MANAGER HELPER FUNCTIONS ═══
+// ═══ CANDLE MODULE HELPER FUNCTIONS ═══
+
+void ShowCandleStatus()
+{
+   if(g_candleModule == NULL)
+   {
+      LOG_ERROR("❌ CandleModule not initialized");
+      return;
+   }
+   
+   int trendDirection = 0;
+   if(g_trendManager != NULL)
+   {
+      if(g_trendManager.IsBullish()) trendDirection = 1;
+      else if(g_trendManager.IsBearish()) trendDirection = -1;
+   }
+   
+   double cooldownRemaining = 0;
+   if(g_riskManager != NULL)
+   {
+      cooldownRemaining = g_riskManager.GetCooldownRemainingSeconds();
+   }
+   
+   SExhaustionResult result = g_candleModule.AnalyzeExhaustion(trendDirection, cooldownRemaining);
+   
+   // Show the detailed report
+   LOG_INFO(g_candleModule.GetExhaustionReport(result), g_debugMain);
+   
+   // Show the status report with pattern percentages
+   LOG_INFO(g_candleModule.GetStatusReport(), g_debugMain);
+   
+   // Show wait status if waiting for next candle
+   if(g_candleModule.IsWaitingForCandle())
+   {
+      LOG_INFO("⏳ " + g_candleModule.GetCandleWaitStatus(), g_debugMain);
+   }
+}
+
+void ForceResetCooldown()
+{
+   if(g_riskManager == NULL)
+   {
+      LOG_ERROR("❌ RiskManager not initialized");
+      return;
+   }
+   
+   if(g_riskManager.IsInCooldown())
+   {
+      g_riskManager.ResetCooldown();
+      LOG_INFO("✅ Cooldown manually reset", g_debugMain);
+   }
+   else
+   {
+      LOG_INFO("ℹ️ Not in cooldown", g_debugMain);
+   }
+}
+
+// ═══ RISK MANAGER HELPER FUNCTIONS ═══
 
 string GetRiskStatus()
 {

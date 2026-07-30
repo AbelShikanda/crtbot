@@ -15,3 +15,15 @@ enum ENUM_MARKET_SCENARIO
    SCENARIO_SLOW_GRIND = 9,            // #9: Slow grind trend
    SCENARIO_UNKNOWN = 0
 };
+
+// ============================================================
+// CROSSOVER ENUMS
+// ============================================================
+enum ENUM_CROSS_STATE
+{
+   CROSS_UP,           // ↗ MA just crossed ABOVE other
+   CROSS_ZONE,         // ≈ MAs are close (within buffer)
+   CROSS_DOWN,         // ↘ MA just crossed BELOW other
+   CLEAR_UP,           // MA is clearly above (no crossing)
+   CLEAR_DOWN          // MA is clearly below (no crossing)
+};

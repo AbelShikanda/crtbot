@@ -1,11 +1,11 @@
 //+------------------------------------------------------------------+
 //|                        Dashboard.mqh                            |
 //|                    Dashboard Display Module                      |
-//|                    v3.2 - PROGRESS BAR REMOVED                 |
-//|                    Clean text-based progress display           |
+//|                    v3.3 - 7 STEP PROGRESS BAR                  |
+//|                    Recommendation + 6 Original Checks          |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
-#property version "3.2"
+#property version "3.3"
 
 // ============================================================
 // INCLUDES
@@ -57,8 +57,8 @@ private:
    
    double   m_minConfidenceThreshold;
    
-   // ═══ PROGRESS TRACKING ═══
-   SProgressCheck m_progress[6];
+   // ═══ PROGRESS TRACKING - 7 STEPS ═══
+   SProgressCheck m_progress[7];
    int      m_currentStep;
    bool     m_allChecksPassed;
    bool     m_tradeExecuted;
@@ -129,7 +129,7 @@ public:
 //+------------------------------------------------------------------+
 CDashboard::CDashboard(string symbol)
 {
-   LOG_DEBUG("Dashboard v3.2 Constructor called", g_dashboardDebugMode);
+   LOG_DEBUG("Dashboard v3.3 Constructor called", g_dashboardDebugMode);
    
    m_symbol = (symbol == NULL) ? _Symbol : symbol;
    m_prefix = "DASH_" + m_symbol + "_";
@@ -166,13 +166,22 @@ CDashboard::~CDashboard()
 }
 
 //+------------------------------------------------------------------+
-//| Initialize Progress                                             |
+//| Initialize Progress - 7 STEPS                                  |
 //+------------------------------------------------------------------+
 void CDashboard::InitializeProgress()
 {
-   string stepNames[6] = {"Trend", "Pullback", "Confidence", "Risk", "RR Check", "Execution"};
+   // ═══ 7 STEPS: Recommendation + 6 Original Checks ═══
+   string stepNames[7] = {
+      "Recommendation",  // Step 1: Trend Manager Recommendation
+      "Crossover",       // Step 2: Crossover Details
+      "Pullback",        // Step 3: Range and Zone
+      "Confidence",      // Step 4: Confidence Threshold
+      "Risk",            // Step 5: Risk Limits
+      "RR Check",        // Step 6: Risk-Reward Ratio
+      "Execution"        // Step 7: Trade Execution
+   };
    
-   for(int i = 0; i < 6; i++)
+   for(int i = 0; i < 7; i++)
    {
       m_progress[i].step = i + 1;
       m_progress[i].name = stepNames[i];
@@ -194,7 +203,7 @@ void CDashboard::InitializeProgress()
 //+------------------------------------------------------------------+
 void CDashboard::SetCheckPassed(int step, string message)
 {
-   if(step < 1 || step > 6) return;
+   if(step < 1 || step > 7) return;
    
    int idx = step - 1;
    m_progress[idx].passed = true;
@@ -207,7 +216,7 @@ void CDashboard::SetCheckPassed(int step, string message)
       m_currentStep = step;
    
    bool allPassed = true;
-   for(int i = 0; i < 6; i++)
+   for(int i = 0; i < 7; i++)
    {
       if(!m_progress[i].passed)
       {
@@ -229,7 +238,7 @@ void CDashboard::SetCheckPassed(int step, string message)
 //+------------------------------------------------------------------+
 void CDashboard::SetCheckFailed(int step, string message)
 {
-   if(step < 1 || step > 6) return;
+   if(step < 1 || step > 7) return;
    
    int idx = step - 1;
    m_progress[idx].passed = false;
@@ -249,7 +258,7 @@ void CDashboard::SetCheckFailed(int step, string message)
 //+------------------------------------------------------------------+
 void CDashboard::SetCheckPending(int step, string message)
 {
-   if(step < 1 || step > 6) return;
+   if(step < 1 || step > 7) return;
    
    int idx = step - 1;
    m_progress[idx].passed = false;
@@ -301,7 +310,7 @@ int CDashboard::GetOverallColor()
 }
 
 //+------------------------------------------------------------------+
-//| Get Progress Percent                                            |
+//| Get Progress Percent - 7 STEPS                                 |
 //+------------------------------------------------------------------+
 int CDashboard::GetProgressPercent()
 {
@@ -313,7 +322,7 @@ int CDashboard::GetProgressPercent()
    {
       if(m_progress[i].passed) passedCount++;
    }
-   return (passedCount * 100) / 6;
+   return (passedCount * 100) / 7;  // 7 steps
 }
 
 //+------------------------------------------------------------------+
@@ -467,7 +476,7 @@ void CDashboard::ShowNoRange()
 }
 
 //+------------------------------------------------------------------+
-//| Draw Progress Checks - TEXT ONLY (NO PROGRESS BAR)             |
+//| Draw Progress Checks - 7 Steps (One Bar, One Checklist)         |
 //+------------------------------------------------------------------+
 void CDashboard::DrawProgressChecks(int x, int y)
 {
@@ -476,7 +485,7 @@ void CDashboard::DrawProgressChecks(int x, int y)
    int barWidth = 50;
    int percent = GetProgressPercent();
    
-   // Draw a simple text-based progress indicator
+   // ─── PROGRESS BAR ───
    string progressBar = "";
    int filled = (percent * barWidth) / 100;
    
@@ -490,7 +499,7 @@ void CDashboard::DrawProgressChecks(int x, int y)
    }
    progressBar += "]";
    
-   // Color the progress text based on progress
+   // Color the progress bar
    int progressColor;
    if(percent <= 33)
       progressColor = clrRed;
@@ -505,10 +514,11 @@ void CDashboard::DrawProgressChecks(int x, int y)
    CreateLabel(m_prefix + "ProgressBar", progressBar, x + indent, checkY, progressColor, 7, false);
    checkY += m_lineHeight - 2;
    
+   // ─── CHECK LIST - SHOW ONLY CURRENT CHECK ───
    // If no signal (step 0), show waiting message
    if(m_currentStep == 0 && !m_tradeExecuted)
    {
-      string waitingText = "Check 0/6: ⏳ No signal detected - waiting for market conditions";
+      string waitingText = "Check 0/7: ⏳ No signal detected - waiting for market conditions";
       CreateLabel(m_prefix + "Check0", waitingText, x + indent, checkY, clrYellow, 7, false);
       return;
    }
@@ -516,32 +526,32 @@ void CDashboard::DrawProgressChecks(int x, int y)
    // If trade executed, show success message
    if(m_tradeExecuted)
    {
-      string execText = "Check 6/6: ✅ Execution: SUCCESSFUL - Trade executed";
+      string execText = "Check 7/7: ✅ Execution: SUCCESSFUL - Trade executed";
       CreateLabel(m_prefix + "CheckExec", execText, x + indent, checkY, clrLimeGreen, 7, false);
       return;
    }
    
-   // Show ONLY the current check (not all checks)
+   // Show ONLY the current check (one at a time)
    int currentIdx = m_currentStep - 1;
    
-   if(currentIdx >= 0 && currentIdx < 6)
+   if(currentIdx >= 0 && currentIdx < 7)
    {
       string checkText = "";
       int checkColor = m_progress[currentIdx].colorCode;
       
       if(m_progress[currentIdx].passed)
       {
-         checkText = "Check " + IntegerToString(m_currentStep) + "/6: ✅ " + m_progress[currentIdx].name + " - " + m_progress[currentIdx].message;
+         checkText = "Check " + IntegerToString(m_currentStep) + "/7: ✅ " + m_progress[currentIdx].name + " - " + m_progress[currentIdx].message;
          checkColor = clrLimeGreen;
       }
       else if(m_progress[currentIdx].isActive)
       {
-         checkText = "Check " + IntegerToString(m_currentStep) + "/6: ⏳ " + m_progress[currentIdx].name + " - " + m_progress[currentIdx].message;
+         checkText = "Check " + IntegerToString(m_currentStep) + "/7: ⏳ " + m_progress[currentIdx].name + " - " + m_progress[currentIdx].message;
          checkColor = clrYellow;
       }
       else
       {
-         checkText = "Check " + IntegerToString(m_currentStep) + "/6: ⏳ " + m_progress[currentIdx].name + " - " + m_progress[currentIdx].message;
+         checkText = "Check " + IntegerToString(m_currentStep) + "/7: ⏳ " + m_progress[currentIdx].name + " - " + m_progress[currentIdx].message;
          checkColor = clrYellow;
       }
       
@@ -554,7 +564,7 @@ void CDashboard::DrawProgressChecks(int x, int y)
 }
 
 //+------------------------------------------------------------------+
-//| UPDATE DASHBOARD - WITH TEXT PROGRESS                           |
+//| UPDATE DASHBOARD - WITH 7 STEP PROGRESS                        |
 //+------------------------------------------------------------------+
 void CDashboard::Update(
    RangeData &range,
@@ -713,7 +723,7 @@ void CDashboard::Update(
    CreateLabel(m_prefix + "ProgressStatus", statusDisplay, x, y, statusColor, fs, true);
    y += m_lineHeight;
    
-   // Progress checks - TEXT ONLY (no color bar)
+   // Progress checks - ONE BAR + ONE CHECK (7 steps)
    DrawProgressChecks(x, y);
    y += 4;  // Padding after checks
    
@@ -760,6 +770,6 @@ void CDashboard::Update(
    
    CreateLabel(m_prefix + "BottomLine", "└──────────────────────────────────────────────────────┘", x, y, clrGray, 8, false);
    
-   LOG_DEBUG("✅ Dashboard update complete (v3.2 - TEXT ONLY PROGRESS)", g_dashboardDebugMode);
+   LOG_DEBUG("✅ Dashboard update complete (v3.3 - 7 STEP PROGRESS)", g_dashboardDebugMode);
    LOG_DEBUG("=== DASHBOARD UPDATE END ===", g_dashboardDebugMode);
 }

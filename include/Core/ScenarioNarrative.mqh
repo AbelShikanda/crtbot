@@ -18,47 +18,6 @@
 class CAdxModule;
 
 //+------------------------------------------------------------------+
-//| Component Narrative Result Structure                             |
-//+------------------------------------------------------------------+
-struct SComponentNarrative
-{
-   string   componentName;      // "PB", "MTF", "MACD", "ADX", "RSI", "VOL"
-   string   direction;          // "BULLISH", "BEARISH", "NEUTRAL"
-   string   narrative;          // Component-specific narrative
-   string   shortNarrative;     // Short version for display
-   double   confidence;         // Component confidence
-   string   strength;           // "STRONG", "MODERATE", "WEAK"
-   string   emoji;              // Component emoji
-   bool     isActive;           // Whether component is active
-   string   alignment;          // "AGREE", "DISAGREE", "NEUTRAL"
-};
-
-//+------------------------------------------------------------------+
-//| Synthesized Scenario Result                                      |
-//+------------------------------------------------------------------+
-struct SSynthesizedScenario
-{
-   string   scenarioName;       // Name of the scenario
-   string   scenarioEmoji;      // Emoji for the scenario
-   color    scenarioColor;      // Color for display
-   double   confidence;         // Overall confidence
-   string   direction;          // "BULLISH", "BEARISH", "NEUTRAL"
-   string   description;        // Brief description
-   string   narrative;          // Full synthesized narrative
-   string   shortNarrative;     // Short version
-   string   action;             // Recommended action
-   string   riskLevel;          // Risk level
-   SComponentNarrative componentNarratives[6]; // All component narratives
-   int      componentCount;     // Number of active components
-   int      agreeingCount;      // Number agreeing
-   int      disagreeingCount;   // Number disagreeing
-   string   marketState;        // "TRENDING", "RANGING", "BREAKING OUT", "CONSOLIDATING"
-   string   momentum;           // "STRONG", "MODERATE", "WEAK", "NONE"
-   string   warning;            // Any warnings
-   bool     isValid;
-};
-
-//+------------------------------------------------------------------+
 //| Scenario Narrative Class                                        |
 //+------------------------------------------------------------------+
 class ScenarioNarrative

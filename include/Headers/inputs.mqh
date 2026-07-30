@@ -117,3 +117,8 @@ input group "=== ORDER BLOCK DISPLAY ==="
 input bool     InpShowOrderBlocks = true;        // Show Order Blocks on Chart
 input int      InpMaxOrderBlocks = 10;           // Max OBs above and below price
 input ENUM_TIMEFRAMES InpOrderBlockTF = PERIOD_H4;  // Timeframe for OB detection
+
+// ============================================================
+// ORDER BLOCK DISPLAY
+// ============================================================
+input int       InpCandleWaitCandles = 2;

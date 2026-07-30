@@ -2,14 +2,15 @@
 //|                      RiskManager.mqh                            |
 //|                    Risk Management Module                        |
 //|                    BRACKET-BASED LOT SIZING                     |
-//|                    Version 2.10                                 |
+//|                    Version 2.11                                 |
 //|                    + COOLDOWN ON LOSS                          |
 //|                    + DAILY TRADE LIMIT (3)                     |
 //|                    + PROFIT THRESHOLDS ($20)                  |
 //|                    + AUTO-CLOSE ALL POSITIONS ON LOSS         |
+//|                    + ResetCooldown() method added             |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
-#property version "2.10"
+#property version "2.11"
 
 #include "../Headers/Structures.mqh"
 #include "../Headers/Inputs.mqh"
@@ -34,7 +35,7 @@ private:
    bool     m_useRiskBasedLot;
    bool     m_debugEnabled;
    
-   // ═══ NEW: COOLDOWN & DAILY LIMIT TRACKING ═══
+   // ═══ COOLDOWN & DAILY LIMIT TRACKING ═══
    datetime m_cooldownEndTime;        // When cooldown ends
    bool     m_inCooldown;             // Currently in cooldown?
    datetime m_lastLossTime;           // When last loss occurred
@@ -55,7 +56,7 @@ private:
    string GetBracketName(double balance);
    void   LogBracketInfo(double balance, double lotSize);
    
-   // ═══ NEW: COOLDOWN & DAILY LIMIT METHODS ═══
+   // ═══ COOLDOWN & DAILY LIMIT METHODS ═══
    void   ResetDailyCounter();
    bool   IsCooldownActive();
    bool   IsDayStopped();
@@ -63,7 +64,7 @@ private:
    void   StartCooldown();
    void   StopDay();
    void   CheckAndResetDaily();
-   void   CloseAllPositions();        // ═══ FIXED: Now uses PositionSelect and OrderSend directly ═══
+   void   CloseAllPositions();
    void   LogTradeResult(double profit);
    
 public:
@@ -77,11 +78,16 @@ public:
    bool CheckMinConfidence(double confidence);
    bool CheckMinRR(double rr);
    
-   // ═══ NEW: TRADE RESULT HANDLING ═══
+   // ═══ TRADE RESULT HANDLING ═══
    void OnTradeClosed(double profit);
    void OnTradeExecuted();
    bool CanTrade();
    string GetStatusMessage();
+   
+   // ═══ NEW: COOLDOWN RESET METHOD ═══
+   void ResetCooldown();
+   double GetCooldownRemainingSeconds();  // Returns remaining seconds as double
+   string GetCooldownRemaining();          // Returns formatted string (kept for compatibility)
    
    // Lot sizing - PRIMARY METHOD
    double CalculateLotSize(PrescribedTrade &signal);
@@ -111,12 +117,11 @@ public:
    double GetCurrentBracketLotSize();
    string GetBracketForBalance(double balance);
    
-   // ═══ NEW: STATUS GETTERS ═══
+   // ═══ STATUS GETTERS ═══
    int    GetDailyTradeCount() const { return m_dailyTradeCount; }
    int    GetMaxDailyTrades() const { return m_maxDailyTrades; }
    bool   IsInCooldown() const { return m_inCooldown; }
    bool   IsDayStoppedFlag() const { return m_dayStopped; }
-   string GetCooldownRemaining();
 };
 
 //+------------------------------------------------------------------+
@@ -124,7 +129,7 @@ public:
 //+------------------------------------------------------------------+
 CRiskManager::CRiskManager(string symbol)
 {
-   LOG_DEBUG("CRiskManager v2.10 constructor called for " + symbol, g_debugRiskManager);
+   LOG_DEBUG("CRiskManager v2.11 constructor called for " + symbol, g_debugRiskManager);
    
    m_symbol = symbol;
    m_maxDrawdown = InpMaxDrawdown;
@@ -156,7 +161,7 @@ CRiskManager::CRiskManager(string symbol)
    CheckAndResetDaily();
    
    LOG_DEBUG("========================================", g_debugRiskManager || m_debugEnabled);
-   LOG_DEBUG("RISK MANAGER v2.10 - BRACKET LOT SIZING", g_debugRiskManager || m_debugEnabled);
+   LOG_DEBUG("RISK MANAGER v2.11 - BRACKET LOT SIZING", g_debugRiskManager || m_debugEnabled);
    LOG_DEBUG("========================================", g_debugRiskManager || m_debugEnabled);
    LOG_DEBUG("Lot size determined by account balance bracket:", g_debugRiskManager || m_debugEnabled);
    LOG_DEBUG("  $0 - $49       → 0.01 lots", g_debugRiskManager || m_debugEnabled);
@@ -261,7 +266,7 @@ void CRiskManager::LogBracketInfo(double balance, double lotSize)
 }
 
 //+------------------------------------------------------------------+
-//| ═══ NEW: CLOSE ALL POSITIONS - FIXED ═══                      |
+//| CLOSE ALL POSITIONS                                              |
 //+------------------------------------------------------------------+
 void CRiskManager::CloseAllPositions()
 {
@@ -280,7 +285,6 @@ void CRiskManager::CloseAllPositions()
          {
             ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
             
-            // ═══ FIXED: Use OrderSend directly instead of g_trade ═══
             MqlTradeRequest request = {};
             MqlTradeResult result = {};
             
@@ -325,7 +329,7 @@ void CRiskManager::CloseAllPositions()
 }
 
 //+------------------------------------------------------------------+
-//| ═══ NEW: CHECK AND RESET DAILY COUNTER ═══                    |
+//| CHECK AND RESET DAILY COUNTER                                   |
 //+------------------------------------------------------------------+
 void CRiskManager::CheckAndResetDaily()
 {
@@ -366,7 +370,7 @@ void CRiskManager::CheckAndResetDaily()
 }
 
 //+------------------------------------------------------------------+
-//| ═══ NEW: IS COOLDOWN ACTIVE? ═══                              |
+//| IS COOLDOWN ACTIVE?                                             |
 //+------------------------------------------------------------------+
 bool CRiskManager::IsCooldownActive()
 {
@@ -387,7 +391,7 @@ bool CRiskManager::IsCooldownActive()
 }
 
 //+------------------------------------------------------------------+
-//| ═══ NEW: START COOLDOWN ═══                                   |
+//| START COOLDOWN                                                  |
 //+------------------------------------------------------------------+
 void CRiskManager::StartCooldown()
 {
@@ -405,18 +409,44 @@ void CRiskManager::StartCooldown()
 }
 
 //+------------------------------------------------------------------+
-//| ═══ NEW: STOP DAY ═══                                        |
+//| ═══ NEW: RESET COOLDOWN ═══                                   |
 //+------------------------------------------------------------------+
-void CRiskManager::StopDay()
+void CRiskManager::ResetCooldown()
 {
-   if(m_dayStopped) return;
-   
-   m_dayStopped = true;
-   LOG_WARNING("🛑🛑🛑 DAY STOPPED - No more trades until 3:00 AM");
+   if(m_inCooldown)
+   {
+      m_inCooldown = false;
+      m_cooldownEndTime = 0;
+      LOG_INFO("✅ Cooldown manually reset - Trading resumed", g_debugRiskManager || m_debugEnabled);
+   }
+   else
+   {
+      LOG_DEBUG("ResetCooldown called but not in cooldown", g_debugRiskManager || m_debugEnabled);
+   }
 }
 
 //+------------------------------------------------------------------+
-//| ═══ NEW: GET COOLDOWN REMAINING ═══                          |
+//| ═══ NEW: GET COOLDOWN REMAINING IN SECONDS ═══                |
+//+------------------------------------------------------------------+
+double CRiskManager::GetCooldownRemainingSeconds()
+{
+   if(!m_inCooldown) return 0;
+   
+   datetime currentTime = TimeCurrent();
+   double remaining = (double)(m_cooldownEndTime - currentTime);
+   
+   if(remaining <= 0) 
+   {
+      m_inCooldown = false;
+      m_cooldownEndTime = 0;
+      return 0;
+   }
+   
+   return remaining;
+}
+
+//+------------------------------------------------------------------+
+//| GET COOLDOWN REMAINING - FORMATTED STRING                      |
 //+------------------------------------------------------------------+
 string CRiskManager::GetCooldownRemaining()
 {
@@ -435,25 +465,36 @@ string CRiskManager::GetCooldownRemaining()
 }
 
 //+------------------------------------------------------------------+
-//| ═══ NEW: IS DAY STOPPED? ═══                                 |
+//| STOP DAY                                                        |
+//+------------------------------------------------------------------+
+void CRiskManager::StopDay()
+{
+   if(m_dayStopped) return;
+   
+   m_dayStopped = true;
+   LOG_WARNING("🛑🛑🛑 DAY STOPPED - No more trades until 3:00 AM");
+}
+
+//+------------------------------------------------------------------+
+//| IS DAY STOPPED?                                                |
 //+------------------------------------------------------------------+
 bool CRiskManager::IsDayStopped()
 {
-   CheckAndResetDaily();  // Check for 3:00 AM reset
+   CheckAndResetDaily();
    return m_dayStopped;
 }
 
 //+------------------------------------------------------------------+
-//| ═══ NEW: IS DAILY LIMIT REACHED? ═══                         |
+//| IS DAILY LIMIT REACHED?                                        |
 //+------------------------------------------------------------------+
 bool CRiskManager::IsDailyLimitReached()
 {
-   CheckAndResetDaily();  // Check for 3:00 AM reset
+   CheckAndResetDaily();
    return (m_dailyTradeCount >= m_maxDailyTrades);
 }
 
 //+------------------------------------------------------------------+
-//| ═══ NEW: CAN TRADE? - MAIN GATEKEEPER ═══                    |
+//| CAN TRADE? - MAIN GATEKEEPER                                   |
 //+------------------------------------------------------------------+
 bool CRiskManager::CanTrade()
 {
@@ -487,7 +528,7 @@ bool CRiskManager::CanTrade()
 }
 
 //+------------------------------------------------------------------+
-//| ═══ NEW: ON TRADE CLOSED ═══                                  |
+//| ON TRADE CLOSED                                                 |
 //+------------------------------------------------------------------+
 void CRiskManager::OnTradeClosed(double profit)
 {
@@ -565,18 +606,16 @@ void CRiskManager::OnTradeClosed(double profit)
 }
 
 //+------------------------------------------------------------------+
-//| ═══ NEW: ON TRADE EXECUTED ═══                               |
+//| ON TRADE EXECUTED                                              |
 //+------------------------------------------------------------------+
 void CRiskManager::OnTradeExecuted()
 {
-   // Trade execution is handled in OnTradeClosed
-   // This is just a placeholder for symmetry
    LOG_DEBUG("Trade executed - Daily count: " + IntegerToString(m_dailyTradeCount) + 
              "/" + IntegerToString(m_maxDailyTrades), g_debugRiskManager || m_debugEnabled);
 }
 
 //+------------------------------------------------------------------+
-//| ═══ NEW: GET STATUS MESSAGE ═══                              |
+//| GET STATUS MESSAGE                                             |
 //+------------------------------------------------------------------+
 string CRiskManager::GetStatusMessage()
 {
@@ -604,13 +643,13 @@ string CRiskManager::GetStatusMessage()
 }
 
 //+------------------------------------------------------------------+
-//| Check Risk Limits - UPDATED WITH CANTRADE()                    |
+//| Check Risk Limits                                               |
 //+------------------------------------------------------------------+
 bool CRiskManager::CheckRiskLimits()
 {
    LOG_DEBUG("CheckRiskLimits called", g_debugRiskManager || m_debugEnabled);
    
-   // ═══ NEW: Check cooldown, daily limit, day stopped ═══
+   // ═══ Check cooldown, daily limit, day stopped ═══
    if(!CanTrade())
    {
       LOG_DEBUG("❌ CanTrade() returned false", g_debugRiskManager || m_debugEnabled);
@@ -707,7 +746,7 @@ double CRiskManager::CalculateBracketBasedLot(PrescribedTrade &signal)
 }
 
 //+------------------------------------------------------------------+
-//| Calculate Risk Based Lot - LEGACY METHOD (Kept for reference)   |
+//| Calculate Risk Based Lot - LEGACY METHOD                       |
 //+------------------------------------------------------------------+
 double CRiskManager::CalculateRiskBasedLot(PrescribedTrade &signal)
 {

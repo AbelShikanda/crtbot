@@ -559,3 +559,10 @@ Mainfile
 2. bias entries to the ob nearest or at the asian range high or low depending on direction
 
 Riskmanager
+
+candlemodule
+1. ok then let it display the pattern besides the %age
+2. 
+
+extend scanning to past trade linit.
+

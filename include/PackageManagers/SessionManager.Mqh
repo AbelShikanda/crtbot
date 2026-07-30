@@ -9,6 +9,8 @@
 
 #include "../Headers/Inputs.mqh"
 #include "../Utils/Logger.mqh"
+#include "../Headers/Enums.mqh"
+#include "../Headers/Structures.mqh"
 
 //+------------------------------------------------------------------+
 //| 📊 LOG TOGGLES - Master control for all RangeManager logs      |
@@ -16,23 +18,6 @@
 bool g_enableRangeManagerLogs = false;     // Master toggle - ALL logs
 bool g_enableRangeManagerDebug = false;    // Debug logs
 bool g_enableRangeManagerStatus = false;   // Status logs (5-second interval)
-
-//+------------------------------------------------------------------+
-//| Session Information Structure                                    |
-//+------------------------------------------------------------------+
-struct SessionInfo
-{
-   int      sessionId;           // 0=Off-Hours, 1=London, 2=NY, 3=Asia
-   string   name;                // "London", "New York", "Asia"
-   string   shortName;           // "LONDON", "NY", "ASIA"
-   string   hours;               // "10:30-18:30 UTC"
-   int      adjustment;          // +3 bars
-   datetime startTime;           // Session start time
-   datetime endTime;             // Session end time
-   double   high;                // Session high price
-   double   low;                 // Session low price
-   bool     isValid;             // Whether session data is valid
-};
 
 //+------------------------------------------------------------------+
 //| Range Manager Class - SESSIONS ONLY                             |

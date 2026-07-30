@@ -8,30 +8,13 @@
 #property version "2.05"
 
 #include "../Utils/Logger.mqh"
+#include "../Headers/Enums.mqh"
+#include "../Headers/Structures.mqh"
 
 //+------------------------------------------------------------------+
 //| DEBUG TOGGLE - Set to false to disable all debug output         |
 //+------------------------------------------------------------------+
 bool g_debugOB = false;
-
-//+------------------------------------------------------------------+
-//| Order Block Structure                                            |
-//+------------------------------------------------------------------+
-struct OrderBlock
-{
-   double high;
-   double low;
-   double open;
-   double close;
-   datetime time;
-   bool isValid;
-   bool isBullish;      // true = bullish OB, false = bearish OB
-   bool isMitigated;    // true = already tested
-   int strength;        // 1-3 (based on size)
-   int index;           // Position in array
-   double distance;     // Distance from current price
-   int methodType;      // 1=Engulfing, 2=Reversal, 3=Trend
-};
 
 //+------------------------------------------------------------------+
 //| Order Block Display Class                                        |
