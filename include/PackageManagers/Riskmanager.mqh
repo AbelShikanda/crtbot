@@ -62,6 +62,7 @@ private:
    bool   IsDayStopped();
    bool   IsDailyLimitReached();
    void   StartCooldown();
+   void   StartCooldown(int hours);
    void   StopDay();
    void   CheckAndResetDaily();
    void   CloseAllPositions();
@@ -144,7 +145,7 @@ CRiskManager::CRiskManager(string symbol)
    m_inCooldown = false;
    m_lastLossTime = 0;
    m_dailyTradeCount = 0;
-   m_maxDailyTrades = 3;           // Max 3 trades per day
+   m_maxDailyTrades = 300;           // Max 3 trades per day
    m_profitThreshold = 20.0;       // $20 profit threshold
    m_dayStopped = false;
    m_lastResetDate = 0;
@@ -390,18 +391,18 @@ bool CRiskManager::IsCooldownActive()
    return true;
 }
 
-//+------------------------------------------------------------------+
-//| START COOLDOWN                                                  |
-//+------------------------------------------------------------------+
-void CRiskManager::StartCooldown()
+// Replace the StartCooldown method
+void CRiskManager::StartCooldown(int hours)
 {
-   if(m_inCooldown) return;  // Already in cooldown
+   if(m_inCooldown) return;
    
-   m_cooldownEndTime = TimeCurrent() + (2 * 3600);  // 2 hours
+   if(hours <= 0) hours = 2;  // Default to 2 hours
+   
+   m_cooldownEndTime = TimeCurrent() + (hours * 3600);
    m_inCooldown = true;
    m_lastLossTime = TimeCurrent();
    
-   LOG_WARNING("⏳⏳⏳ COOLDOWN STARTED - 2 hours");
+   LOG_WARNING("⏳⏳⏳ COOLDOWN STARTED - " + IntegerToString(hours) + " hours");
    LOG_WARNING("   No new trades allowed until " + TimeToString(m_cooldownEndTime));
    
    // Close all positions
@@ -527,9 +528,6 @@ bool CRiskManager::CanTrade()
    return true;
 }
 
-//+------------------------------------------------------------------+
-//| ON TRADE CLOSED                                                 |
-//+------------------------------------------------------------------+
 void CRiskManager::OnTradeClosed(double profit)
 {
    LOG_INFO("📊 Trade closed with profit: $" + DoubleToString(profit, 2), 
@@ -543,36 +541,36 @@ void CRiskManager::OnTradeClosed(double profit)
                 "/" + IntegerToString(m_maxDailyTrades), g_debugRiskManager || m_debugEnabled);
    }
    
-   // Step 2: Check for LOSS - triggers cooldown
+   // ═══ FIX: ALWAYS START COOLDOWN AFTER ANY TRADE ═══
+   
+   // Step 2: LOSS - 2 hour cooldown
    if(profit < 0)
    {
       LOG_WARNING("⚠️ LOSS detected: $" + DoubleToString(profit, 2));
       
       // Start cooldown (this also closes all positions)
-      StartCooldown();
+      StartCooldown(InpCooldownLoss);
       
       // Check if drawdown is exceeded
       if(GetCurrentDrawdown() >= m_maxDrawdown)
       {
          LOG_ERROR("❌❌❌ MAX DRAWDOWN EXCEEDED: " + 
                    DoubleToString(GetCurrentDrawdown(), 1) + "%");
-         // Stop day completely
          StopDay();
       }
       
       return;  // Loss handled, exit
    }
    
-   // Step 3: Check for BIG PROFIT >= $20
+   // Step 3: BIG PROFIT >= $20 - 1 hour cooldown
    if(profit >= m_profitThreshold)
    {
       LOG_INFO("💰💰💰 BIG PROFIT: $" + DoubleToString(profit, 2) + 
                " (>= $" + DoubleToString(m_profitThreshold, 0) + ")", 
                g_debugRiskManager || m_debugEnabled);
-      LOG_INFO("   This does NOT count toward daily limit", 
-               g_debugRiskManager || m_debugEnabled);
-      LOG_INFO("   Stopping trading for the day", 
-               g_debugRiskManager || m_debugEnabled);
+      
+      // Start cooldown for big win
+      StartCooldown(InpCooldownWin);
       
       // Decrement daily count since big profit doesn't count
       if(m_dailyTradeCount > 0)
@@ -588,15 +586,25 @@ void CRiskManager::OnTradeClosed(double profit)
       return;
    }
    
-   // Step 4: Small profit (< $20) - Continue trading
+   // Step 4: SMALL PROFIT (0 < profit < $20) - 1 hour cooldown
    if(profit > 0 && profit < m_profitThreshold)
    {
       LOG_DEBUG("✅ Small profit: $" + DoubleToString(profit, 2) + 
-                " (< $" + DoubleToString(m_profitThreshold, 0) + 
-                ") - Continue trading", g_debugRiskManager || m_debugEnabled);
+                " (< $" + DoubleToString(m_profitThreshold, 0) + ")", 
+                g_debugRiskManager || m_debugEnabled);
+      
+      // Start cooldown for small win
+      StartCooldown(InpCooldownWin);
    }
    
-   // Step 5: Check if daily limit reached after this trade
+   // Step 5: BREAKEVEN (profit == 0) - 1 hour cooldown
+   if(profit == 0)
+   {
+      LOG_DEBUG("⚖️ Breakeven trade", g_debugRiskManager || m_debugEnabled);
+      StartCooldown(InpCooldownBE);
+   }
+   
+   // Step 6: Check if daily limit reached after this trade
    if(m_dailyTradeCount >= m_maxDailyTrades)
    {
       LOG_WARNING("📊 Daily limit reached: " + IntegerToString(m_dailyTradeCount) + 

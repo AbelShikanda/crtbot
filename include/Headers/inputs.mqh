@@ -60,7 +60,7 @@ input int    InpSLBufferPoints      = 30;   // SL Buffer in points
 //+------------------------------------------------------------------+
 input bool   InpUseTrailingStop = true;     // Use Trailing Stop
 input int    InpTrailingStartPips = 1000;     // Start trailing after X pips
-input int    InpTrailingStopPips = 1000;      // Trail SL X pips behind
+input int    InpTrailingStopPips = 500;      // Trail SL X pips behind
 
 // ============================================================
 // PARTIAL CLOSE SETTINGS
@@ -83,6 +83,15 @@ input bool     InpUseRiskBasedLot   = true;
 input double   InpRiskPerTrade      = 1.0;
 input double   InpMaxLotSize        = 1.0;
 input double   InpMinLotSize        = 0.01;
+
+// ============================================================
+// RISK MANAGEMENT COOLDOWN SETTINGS
+// ============================================================
+input group "=== COOLDOWN SETTINGS ==="
+input int      InpCooldownLoss = 2;          // Cooldown hours after a LOSS
+input int      InpCooldownWin = 1;           // Cooldown hours after a WIN
+input int      InpCooldownBE = 1;            // Cooldown hours after BREAKEVEN
+input bool     InpCooldownEnable = true;     // Enable cooldown system
 
 // ============================================================
 //| Input Parameters - Trend Filter                                  
@@ -122,3 +131,31 @@ input ENUM_TIMEFRAMES InpOrderBlockTF = PERIOD_H4;  // Timeframe for OB detectio
 // ORDER BLOCK DISPLAY
 // ============================================================
 input int       InpCandleWaitCandles = 2;
+
+// ============================================================
+// POSITION SIZING AND SL/TP SETTINGS (STRUCTURE-BASED WITH FALLBACK)
+// ============================================================
+
+// ─── FIXED VALUES (FALLBACK) ───
+input int      InpFallbackSLPips = 1000;           // Fallback SL (points) - used if ATR fails
+input int      InpFallbackTPPips = 1500;           // Fallback TP (points) - 1.5:1 RR
+
+// ─── STRUCTURE SETTINGS (PREFERRED) ───
+input bool     InpUseStructureSLTP = true;       // Use adaptive SL/TP (recommended)
+input int      InpStructureMinSLPips = 1000;       // Minimum SL (points)
+input int      InpStructureMaxSLPips = 1500;       // Maximum SL (points)
+input int      InpStructureMinTPPips = 2000;       // Minimum TP (points)
+input int      InpStructureMaxTPPips = 5000;      // Maximum TP (points)
+input double   InpStructureMinRR = 1.5;          // Minimum Risk-Reward ratio
+input double   InpStructureMaxRR = 3.0;          // Maximum Risk-Reward ratio
+
+// ─── ATR SETTINGS (FOR STRUCTURE) ───
+input bool     InpUseATR = true;                 // Use ATR for dynamic sizing
+input double   InpATRMultiplierSL = 1.5;         // SL = ATR × multiplier
+input double   InpATRMultiplierTP = 2.5;         // TP = ATR × multiplier
+input int      InpATRTimeframe = 5;              // ATR timeframe (5=M5)
+
+// ─── BUFFER SETTINGS (TO AVOID WHIPSAWS) ───
+input int      InpSLBufferPips = 5;              // SL buffer (points) - adds safety
+input int      InpTPBufferPips = 5;              // TP buffer (points) - adds safety
+input bool     InpUseBuffer = true;              // Enable buffer protection

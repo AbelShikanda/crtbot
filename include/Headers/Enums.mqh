@@ -27,3 +27,13 @@ enum ENUM_CROSS_STATE
    CLEAR_UP,           // MA is clearly above (no crossing)
    CLEAR_DOWN          // MA is clearly below (no crossing)
 };
+
+//+------------------------------------------------------------------+
+//| TREND DIRECTION ENUM - FOR CROSSOVER DETECTION                 |
+//+------------------------------------------------------------------+
+enum ENUM_TREND_DIRECTION
+{
+   TREND_BULLISH,      // Positive/Upward trend
+   TREND_BEARISH,      // Negative/Downward trend
+   TREND_NEUTRAL       // Sideways/No clear trend
+};

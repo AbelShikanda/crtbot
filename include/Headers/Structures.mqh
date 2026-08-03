@@ -1,10 +1,10 @@
 //+------------------------------------------------------------------+
 //|                        Structures.mqh                           |
 //|                    Core Structure Definitions                    |
-//|                    v3.20 - All Structs in One Place            |
+//|                    v4.00 - Added H1 Support                     |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
-#property version "3.20"
+#property version "4.00"
 
 #include "../Headers/Enums.mqh"
 
@@ -52,14 +52,15 @@ struct STFData
 };
 
 //+------------------------------------------------------------------+
-//| MARKET FEATURES STRUCTURE                                       |
+//| MARKET FEATURES STRUCTURE - v4.00 (with H1)                    |
 //+------------------------------------------------------------------+
 struct SMarketFeatures
 {
    // Timeframe data
-   STFData  m15;
-   STFData  m5;
-   STFData  m1;
+   STFData  m15;                 // M15 - TREND
+   STFData  m5;                  // M5  - ENTRY
+   STFData  m1;                  // M1  - CONTEXT (Fine-tuning)
+   STFData  h1;                  // H1  - CONTEXT (Macro filter) ⬅️ NEW
    
    // Derived metrics
    double   weightedScore;       // 0-100
@@ -113,7 +114,7 @@ struct STrendRecommendation
    
    // Reasoning
    string   primaryReason;
-   string   secondaryReasons[5];
+   string   secondaryReasons[7]; // ⬅️ Increased from 5 to 7
    int      reasonCount;
    string   fullNarrative;
    
@@ -124,7 +125,7 @@ struct STrendRecommendation
 };
 
 //+------------------------------------------------------------------+
-//| CROSSOVER RESULT STRUCTURE                                      |
+//| CROSSOVER RESULT STRUCTURE - v4.00                             |
 //+------------------------------------------------------------------+
 struct SCrossoverResult
 {
@@ -165,7 +166,7 @@ struct SCrossoverResult
 };
 
 // ============================================================
-// PULLBACK STRUCTURES
+// PULLBACK STRUCTURES (Unchanged)
 // ============================================================
 
 //+------------------------------------------------------------------+
@@ -473,7 +474,6 @@ struct OrderBlock
    double distance;     // Distance from current price
    int methodType;      // 1=Engulfing, 2=Reversal, 3=Trend
 };
-
 
 //+------------------------------------------------------------------+
 //| Component Narrative Result Structure                             |

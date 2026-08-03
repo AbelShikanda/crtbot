@@ -1,11 +1,15 @@
 //+------------------------------------------------------------------+
 //|                        Dashboard.mqh                            |
 //|                    Dashboard Display Module                      |
-//|                    v3.3 - 7 STEP PROGRESS BAR                  |
-//|                    Recommendation + 6 Original Checks          |
+//|                    v4.0 - 8 STEP PROGRESS BAR                  |
+//|                    REMOVED: Pullback, RR Check                 |
+//|                    ADDED: Priority, Direction, Strength,        |
+//|                          Exhaustion, Alignment                  |
+//|                    FONTS: +1 point size increase               |
+//|                    SPACING: Added below checks                 |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
-#property version "3.3"
+#property version "4.0"
 
 // ============================================================
 // INCLUDES
@@ -14,6 +18,7 @@
 #include "../PackageManagers/ComponentManager.mqh"
 #include "../PackageManagers/TrendManager.mqh"
 #include "../PackageManagers/Riskmanager.mqh"
+#include "../PackageManagers/PositionManager.mqh"
 #include "../Utils/Logger.mqh"
 
 // ============================================================
@@ -54,11 +59,12 @@ private:
    CTrendManager* m_trendManager;
    CComponentManager* m_componentManager;
    CRiskManager* m_riskManager;
+   CPositionManager* m_positionManager;
    
    double   m_minConfidenceThreshold;
    
-   // ═══ PROGRESS TRACKING - 7 STEPS ═══
-   SProgressCheck m_progress[7];
+   // ═══ PROGRESS TRACKING - 8 STEPS ═══
+   SProgressCheck m_progress[8];
    int      m_currentStep;
    bool     m_allChecksPassed;
    bool     m_tradeExecuted;
@@ -95,6 +101,7 @@ public:
    void SetTrendManager(CTrendManager* trendManager) { m_trendManager = trendManager; }
    void SetComponentManager(CComponentManager* componentManager) { m_componentManager = componentManager; }
    void SetRiskManager(CRiskManager* riskManager) { m_riskManager = riskManager; }
+   void SetPositionManager(CPositionManager* positionManager) { m_positionManager = positionManager; }
    void SetMinConfidenceThreshold(double threshold) { m_minConfidenceThreshold = threshold; }
    void SetDebug(bool enable) { m_debugEnabled = enable; }
    void Initialize() { InitializeProgress(); m_lastBarTime = 0; m_tradeExecuted = false; }
@@ -129,7 +136,7 @@ public:
 //+------------------------------------------------------------------+
 CDashboard::CDashboard(string symbol)
 {
-   LOG_DEBUG("Dashboard v3.3 Constructor called", g_dashboardDebugMode);
+   LOG_DEBUG("Dashboard v4.0 Constructor called", g_dashboardDebugMode);
    
    m_symbol = (symbol == NULL) ? _Symbol : symbol;
    m_prefix = "DASH_" + m_symbol + "_";
@@ -137,13 +144,14 @@ CDashboard::CDashboard(string symbol)
    m_trendManager = NULL;
    m_componentManager = NULL;
    m_riskManager = NULL;
+   m_positionManager = NULL;
    m_minConfidenceThreshold = 70.0;
    m_debugEnabled = g_dashboardDebugMode;
    
    m_startX = 8;
    m_startY = 35;
-   m_lineHeight = 14;
-   m_dashWidth = 520;
+   m_lineHeight = 16;  // Increased from 14 for larger fonts
+   m_dashWidth = 540;  // Slightly wider for larger text
    
    m_currentStep = 0;
    m_allChecksPassed = false;
@@ -153,7 +161,10 @@ CDashboard::CDashboard(string symbol)
    
    InitializeProgress();
    
-   LOG_DEBUG("Dashboard created - Symbol: " + m_symbol, g_dashboardDebugMode);
+   LOG_DEBUG("Dashboard v4.0 created - Symbol: " + m_symbol, g_dashboardDebugMode);
+   LOG_DEBUG("   Steps: 8 (Risk, Priority, Direction, Strength, Exhaustion, Confidence, Alignment, Execution)", g_dashboardDebugMode);
+   LOG_DEBUG("   REMOVED: Pullback, RR Check (handled by PositionManager)", g_dashboardDebugMode);
+   LOG_DEBUG("   Fonts: +1 point size | Line Height: " + IntegerToString(m_lineHeight), g_dashboardDebugMode);
 }
 
 //+------------------------------------------------------------------+
@@ -166,22 +177,23 @@ CDashboard::~CDashboard()
 }
 
 //+------------------------------------------------------------------+
-//| Initialize Progress - 7 STEPS                                  |
+//| Initialize Progress - 8 STEPS                                  |
 //+------------------------------------------------------------------+
 void CDashboard::InitializeProgress()
 {
-   // ═══ 7 STEPS: Recommendation + 6 Original Checks ═══
-   string stepNames[7] = {
-      "Recommendation",  // Step 1: Trend Manager Recommendation
-      "Crossover",       // Step 2: Crossover Details
-      "Pullback",        // Step 3: Range and Zone
-      "Confidence",      // Step 4: Confidence Threshold
-      "Risk",            // Step 5: Risk Limits
-      "RR Check",        // Step 6: Risk-Reward Ratio
-      "Execution"        // Step 7: Trade Execution
+   // ═══ 8 STEPS: Risk → Priority → Direction → Strength → Exhaustion → Confidence → Alignment → Execution ═══
+   string stepNames[8] = {
+      "Risk Manager",      // Step 1: Cooldown, daily limits
+      "Priority",          // Step 2: Crossover Priority 1-3
+      "Direction",         // Step 3: BULLISH/BEARISH (not NEUTRAL)
+      "Strength",          // Step 4: Trend strength >= threshold
+      "Exhaustion",        // Step 5: CandleModule exhaustion
+      "Confidence",        // Step 6: ComponentManager confidence
+      "Alignment",         // Step 7: Signal aligns with trend
+      "Execution"          // Step 8: PositionManager executes
    };
    
-   for(int i = 0; i < 7; i++)
+   for(int i = 0; i < 8; i++)
    {
       m_progress[i].step = i + 1;
       m_progress[i].name = stepNames[i];
@@ -203,7 +215,7 @@ void CDashboard::InitializeProgress()
 //+------------------------------------------------------------------+
 void CDashboard::SetCheckPassed(int step, string message)
 {
-   if(step < 1 || step > 7) return;
+   if(step < 1 || step > 8) return;
    
    int idx = step - 1;
    m_progress[idx].passed = true;
@@ -216,7 +228,7 @@ void CDashboard::SetCheckPassed(int step, string message)
       m_currentStep = step;
    
    bool allPassed = true;
-   for(int i = 0; i < 7; i++)
+   for(int i = 0; i < 8; i++)
    {
       if(!m_progress[i].passed)
       {
@@ -238,7 +250,7 @@ void CDashboard::SetCheckPassed(int step, string message)
 //+------------------------------------------------------------------+
 void CDashboard::SetCheckFailed(int step, string message)
 {
-   if(step < 1 || step > 7) return;
+   if(step < 1 || step > 8) return;
    
    int idx = step - 1;
    m_progress[idx].passed = false;
@@ -258,7 +270,7 @@ void CDashboard::SetCheckFailed(int step, string message)
 //+------------------------------------------------------------------+
 void CDashboard::SetCheckPending(int step, string message)
 {
-   if(step < 1 || step > 7) return;
+   if(step < 1 || step > 8) return;
    
    int idx = step - 1;
    m_progress[idx].passed = false;
@@ -310,7 +322,7 @@ int CDashboard::GetOverallColor()
 }
 
 //+------------------------------------------------------------------+
-//| Get Progress Percent - 7 STEPS                                 |
+//| Get Progress Percent - 8 STEPS                                 |
 //+------------------------------------------------------------------+
 int CDashboard::GetProgressPercent()
 {
@@ -322,7 +334,7 @@ int CDashboard::GetProgressPercent()
    {
       if(m_progress[i].passed) passedCount++;
    }
-   return (passedCount * 100) / 7;  // 7 steps
+   return (passedCount * 100) / 8;  // 8 steps
 }
 
 //+------------------------------------------------------------------+
@@ -391,7 +403,7 @@ string CDashboard::GetBoostEmoji(double boost)
 }
 
 //+------------------------------------------------------------------+
-//| Pad Right - Helper for alignment                                |
+//| Pad Right                                                       |
 //+------------------------------------------------------------------+
 string CDashboard::PadRight(string text, int width)
 {
@@ -404,7 +416,7 @@ string CDashboard::PadRight(string text, int width)
 }
 
 //+------------------------------------------------------------------+
-//| Create Label                                                    |
+//| Create Label - All fonts +1 point size                         |
 //+------------------------------------------------------------------+
 void CDashboard::CreateLabel(string name, string text, int x, int y, int clr, int fontSize, bool bold)
 {
@@ -458,31 +470,32 @@ void CDashboard::ShowNoRange()
    int y = m_startY;
    int x = m_startX;
    
-   CreateLabel(m_prefix + "TopLeft", "┌", x, y, clrGray, 8, false);
-   CreateLabel(m_prefix + "TopLine", "──────────────────────────────────────────────────────", x + 8, y, clrGray, 8, false);
-   CreateLabel(m_prefix + "TopRight", "┐", x + 248, y, clrGray, 8, false);
+   // Fonts: +1 point size
+   CreateLabel(m_prefix + "TopLeft", "┌", x, y, clrGray, 9, false);
+   CreateLabel(m_prefix + "TopLine", "──────────────────────────────────────────────────────", x + 8, y, clrGray, 9, false);
+   CreateLabel(m_prefix + "TopRight", "┐", x + 248, y, clrGray, 9, false);
    y += m_lineHeight;
    
-   CreateLabel(m_prefix + "Title", "│ ◆ PULLBACK DASHBOARD ◆ " + m_symbol, x, y, clrWhite, 9, true);
+   CreateLabel(m_prefix + "Title", "│ ◆ PULLBACK DASHBOARD ◆ " + m_symbol, x, y, clrWhite, 10, true);
    y += m_lineHeight;
    
-   CreateLabel(m_prefix + "Sep1", "├──────────────────────────────────────────────────────┤", x, y, clrGray, 8, false);
+   CreateLabel(m_prefix + "Sep1", "├──────────────────────────────────────────────────────┤", x, y, clrGray, 9, false);
    y += m_lineHeight + 2;
    
-   CreateLabel(m_prefix + "Error", "│ ⛔ NO VALID RANGE DETECTED", x, y, clrOrangeRed, 9, true);
+   CreateLabel(m_prefix + "Error", "│ ⛔ NO VALID RANGE DETECTED", x, y, clrOrangeRed, 10, true);
    y += m_lineHeight + 2;
    
-   CreateLabel(m_prefix + "BottomLine", "└──────────────────────────────────────────────────────┘", x, y, clrGray, 8, false);
+   CreateLabel(m_prefix + "BottomLine", "└──────────────────────────────────────────────────────┘", x, y, clrGray, 9, false);
 }
 
 //+------------------------------------------------------------------+
-//| Draw Progress Checks - 7 Steps (One Bar, One Checklist)         |
+//| Draw Progress Checks - 8 Steps                                 |
 //+------------------------------------------------------------------+
 void CDashboard::DrawProgressChecks(int x, int y)
 {
    int checkY = y;
    int indent = 4;
-   int barWidth = 50;
+   int barWidth = 55;  // Slightly wider for larger font
    int percent = GetProgressPercent();
    
    // ─── PROGRESS BAR ───
@@ -499,7 +512,6 @@ void CDashboard::DrawProgressChecks(int x, int y)
    }
    progressBar += "]";
    
-   // Color the progress bar
    int progressColor;
    if(percent <= 33)
       progressColor = clrRed;
@@ -511,60 +523,57 @@ void CDashboard::DrawProgressChecks(int x, int y)
    if(m_tradeExecuted)
       progressColor = clrLimeGreen;
    
-   CreateLabel(m_prefix + "ProgressBar", progressBar, x + indent, checkY, progressColor, 7, false);
+   // Font: 8 (was 7)
+   CreateLabel(m_prefix + "ProgressBar", progressBar, x + indent, checkY, progressColor, 8, false);
    checkY += m_lineHeight - 2;
    
    // ─── CHECK LIST - SHOW ONLY CURRENT CHECK ───
-   // If no signal (step 0), show waiting message
    if(m_currentStep == 0 && !m_tradeExecuted)
    {
-      string waitingText = "Check 0/7: ⏳ No signal detected - waiting for market conditions";
-      CreateLabel(m_prefix + "Check0", waitingText, x + indent, checkY, clrYellow, 7, false);
+      string waitingText = "Check 0/8: ⏳ No signal detected - waiting for market conditions";
+      CreateLabel(m_prefix + "Check0", waitingText, x + indent, checkY, clrYellow, 8, false);
       return;
    }
    
-   // If trade executed, show success message
    if(m_tradeExecuted)
    {
-      string execText = "Check 7/7: ✅ Execution: SUCCESSFUL - Trade executed";
-      CreateLabel(m_prefix + "CheckExec", execText, x + indent, checkY, clrLimeGreen, 7, false);
+      string execText = "Check 8/8: ✅ Execution: SUCCESSFUL - Trade executed";
+      CreateLabel(m_prefix + "CheckExec", execText, x + indent, checkY, clrLimeGreen, 8, false);
       return;
    }
    
-   // Show ONLY the current check (one at a time)
    int currentIdx = m_currentStep - 1;
    
-   if(currentIdx >= 0 && currentIdx < 7)
+   if(currentIdx >= 0 && currentIdx < 8)
    {
       string checkText = "";
       int checkColor = m_progress[currentIdx].colorCode;
       
       if(m_progress[currentIdx].passed)
       {
-         checkText = "Check " + IntegerToString(m_currentStep) + "/7: ✅ " + m_progress[currentIdx].name + " - " + m_progress[currentIdx].message;
+         checkText = "Check " + IntegerToString(m_currentStep) + "/8: ✅ " + m_progress[currentIdx].name + " - " + m_progress[currentIdx].message;
          checkColor = clrLimeGreen;
       }
       else if(m_progress[currentIdx].isActive)
       {
-         checkText = "Check " + IntegerToString(m_currentStep) + "/7: ⏳ " + m_progress[currentIdx].name + " - " + m_progress[currentIdx].message;
+         checkText = "Check " + IntegerToString(m_currentStep) + "/8: ⏳ " + m_progress[currentIdx].name + " - " + m_progress[currentIdx].message;
          checkColor = clrYellow;
       }
       else
       {
-         checkText = "Check " + IntegerToString(m_currentStep) + "/7: ⏳ " + m_progress[currentIdx].name + " - " + m_progress[currentIdx].message;
+         checkText = "Check " + IntegerToString(m_currentStep) + "/8: ⏳ " + m_progress[currentIdx].name + " - " + m_progress[currentIdx].message;
          checkColor = clrYellow;
       }
       
-      // Truncate if too long
-      if(StringLen(checkText) > 55)
-         checkText = StringSubstr(checkText, 0, 55) + "...";
+      if(StringLen(checkText) > 58)
+         checkText = StringSubstr(checkText, 0, 58) + "...";
       
-      CreateLabel(m_prefix + "CheckCurrent", checkText, x + indent, checkY, checkColor, 7, false);
+      CreateLabel(m_prefix + "CheckCurrent", checkText, x + indent, checkY, checkColor, 8, false);
    }
 }
 
 //+------------------------------------------------------------------+
-//| UPDATE DASHBOARD - WITH 7 STEP PROGRESS                        |
+//| UPDATE DASHBOARD - WITH 8 STEP PROGRESS                        |
 //+------------------------------------------------------------------+
 void CDashboard::Update(
    RangeData &range,
@@ -575,7 +584,7 @@ void CDashboard::Update(
    SMarketAnalysis &analysis
 )
 {
-   LOG_DEBUG("=== DASHBOARD UPDATE ===", g_dashboardDebugMode);
+   LOG_DEBUG("=== DASHBOARD UPDATE (v4.0) ===", g_dashboardDebugMode);
    
    ClearDashboard();
    
@@ -599,21 +608,23 @@ void CDashboard::Update(
    
    int y = m_startY;
    int x = m_startX;
-   int fs = 8;
-   int fsSmall = 7;
-   int fsTitle = 9;
+   
+   // All fonts increased by +1 point size
+   int fs = 9;        // was 8
+   int fsSmall = 8;   // was 7
+   int fsTitle = 10;  // was 9
    
    // Top border
-   CreateLabel(m_prefix + "TopLeft", "┌", x, y, clrGray, 8, false);
-   CreateLabel(m_prefix + "TopLine", "──────────────────────────────────────────────────────", x + 8, y, clrGray, 8, false);
-   CreateLabel(m_prefix + "TopRight", "┐", x + 248, y, clrGray, 8, false);
+   CreateLabel(m_prefix + "TopLeft", "┌", x, y, clrGray, 9, false);
+   CreateLabel(m_prefix + "TopLine", "──────────────────────────────────────────────────────", x + 8, y, clrGray, 9, false);
+   CreateLabel(m_prefix + "TopRight", "┐", x + 248, y, clrGray, 9, false);
    y += m_lineHeight;
    
    // Title
-   CreateLabel(m_prefix + "Title", "│ ◆ PULLBACK DASHBOARD ◆ " + m_symbol, x, y, clrWhite, fsTitle, true);
+   CreateLabel(m_prefix + "Title", "│ ◆ PULLBACK DASHBOARD v4.0 ◆ " + m_symbol, x, y, clrWhite, fsTitle, true);
    y += m_lineHeight;
    
-   CreateLabel(m_prefix + "Sep1", "├──────────────────────────────────────────────────────┤", x, y, clrGray, 8, false);
+   CreateLabel(m_prefix + "Sep1", "├──────────────────────────────────────────────────────┤", x, y, clrGray, 9, false);
    y += m_lineHeight + 1;
    
    // SCENARIO + DESCRIPTION
@@ -626,7 +637,7 @@ void CDashboard::Update(
    CreateLabel(m_prefix + "Scenario", scenarioDisplay, x, y, scenarioColor, fs, true);
    y += m_lineHeight + 1;
    
-   CreateLabel(m_prefix + "Sep2", "├──────────────────────────────────────────────────────┤", x, y, clrGray, 8, false);
+   CreateLabel(m_prefix + "Sep2", "├──────────────────────────────────────────────────────┤", x, y, clrGray, 9, false);
    y += m_lineHeight + 1;
    
    // COMPONENTS + TREND
@@ -635,16 +646,13 @@ void CDashboard::Update(
       string trendDir = m_trendManager.GetDirection();
       double trendStrength = m_trendManager.GetStrength();
       double trendConfidence = m_trendManager.GetTrendConfidence();
+      int priority = m_trendManager.GetCrossoverPriority();
+      string scenario = m_trendManager.GetCrossoverScenarioName();
       string arrow = (trendDir == "BULLISH") ? "▲" : (trendDir == "BEARISH") ? "▼" : "●";
       int trendColor = GetTrendColor(trendDir);
       
-      string trendDisplay = "│ COMPONENTS:    TREND: " + arrow + " " + trendDir + " | Stren: " + DoubleToString(trendStrength, 1) + "% | Conf: " + DoubleToString(trendConfidence, 1) + "%";
+      string trendDisplay = "│ CROSSOVER: " + scenario + " (P" + IntegerToString(priority) + ") | " + arrow + " " + trendDir + " | Stren: " + DoubleToString(trendStrength, 1) + "%";
       CreateLabel(m_prefix + "Trend", trendDisplay, x, y, trendColor, fsSmall, false);
-      y += m_lineHeight;
-   }
-   else
-   {
-      CreateLabel(m_prefix + "Trend", "│ COMPONENTS:    TREND: ● NEUTRAL | Stren: 0.0% | Conf: 0.0%", x, y, clrYellow, fsSmall, false);
       y += m_lineHeight;
    }
    
@@ -711,11 +719,10 @@ void CDashboard::Update(
    CreateLabel(m_prefix + "Threshold", thresholdLine, x + 2, y, finalConf >= threshold ? clrLimeGreen : clrYellow, fsSmall, false);
    y += m_lineHeight + 1;
    
-   CreateLabel(m_prefix + "Sep3", "├──────────────────────────────────────────────────────┤", x, y, clrGray, 8, false);
+   CreateLabel(m_prefix + "Sep3", "├──────────────────────────────────────────────────────┤", x, y, clrGray, 9, false);
    y += m_lineHeight + 1;
    
-   // ═══ PROGRESS SECTION (TEXT ONLY) ═══
-   // Status line
+   // ═══ PROGRESS SECTION (8 STEPS) ═══
    string statusText = GetOverallStatus();
    int statusColor = GetOverallColor();
    string statusDisplay = "│ " + statusText;
@@ -723,11 +730,10 @@ void CDashboard::Update(
    CreateLabel(m_prefix + "ProgressStatus", statusDisplay, x, y, statusColor, fs, true);
    y += m_lineHeight;
    
-   // Progress checks - ONE BAR + ONE CHECK (7 steps)
    DrawProgressChecks(x, y);
-   y += 4;  // Padding after checks
+   y += 6;  // ⬅️ ADDED: Extra spacing below checks
    
-   CreateLabel(m_prefix + "Sep4", "├──────────────────────────────────────────────────────┤", x, y, clrGray, 8, false);
+   CreateLabel(m_prefix + "Sep4", "├──────────────────────────────────────────────────────┤", x, y, clrGray, 9, false);
    y += m_lineHeight + 1;
    
    // TRADE SECTION
@@ -756,8 +762,16 @@ void CDashboard::Update(
       
       string profitText = isOpenPosition ? StringFormat("%.1f pips", profitPips) : "0.0 pips";
       
+      // Show SL/TP if available
+      string slText = "SL: " + (trade.stopLoss > 0 ? DoubleToString(trade.stopLoss, _Digits) : "N/A");
+      string tpText = "TP: " + (trade.takeProfit > 0 ? DoubleToString(trade.takeProfit, _Digits) : "N/A");
+      
       string tradeLine = "│ " + statusText2 + " " + dirSymbol + "│ " + lotText + "│ " + rrText + "│ Profit: " + profitText;
       CreateLabel(m_prefix + "TradeDir", tradeLine, x, y, dirColor, fs, false);
+      y += m_lineHeight;
+      
+      string sltpLine = "│   " + slText + " | " + tpText;
+      CreateLabel(m_prefix + "TradeSLTP", sltpLine, x + 2, y, clrGray, fsSmall, false);
       y += m_lineHeight;
    }
    else
@@ -768,8 +782,8 @@ void CDashboard::Update(
    }
    y += m_lineHeight + 1;
    
-   CreateLabel(m_prefix + "BottomLine", "└──────────────────────────────────────────────────────┘", x, y, clrGray, 8, false);
+   CreateLabel(m_prefix + "BottomLine", "└──────────────────────────────────────────────────────┘", x, y, clrGray, 9, false);
    
-   LOG_DEBUG("✅ Dashboard update complete (v3.3 - 7 STEP PROGRESS)", g_dashboardDebugMode);
-   LOG_DEBUG("=== DASHBOARD UPDATE END ===", g_dashboardDebugMode);
+   LOG_DEBUG("✅ Dashboard update complete (v4.0 - 8 STEPS)", g_dashboardDebugMode);
+   LOG_DEBUG("   Steps: Risk, Priority, Direction, Strength, Exhaustion, Confidence, Alignment, Execution", g_dashboardDebugMode);
 }
