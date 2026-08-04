@@ -1,13 +1,13 @@
 //+------------------------------------------------------------------+
 //|                        CandleModule.mqh                         |
 //|                    Pullback Exhaustion Detection                 |
-//|                    v1.08 - FIXED: CANDLE CLOSE EVENT TRACKING  |
-//|                    Cooldown Mode: Wait 1-3 candles             |
-//|                    Trading Mode: Check when candle closes      |
-//|                    ENSURES DATA ALIGNMENT                     |
+//|                    v1.10 - FIXED COOLDOWN TRACKING              |
+//|                    Reset ALL tracking variables on cooldown     |
+//|                    Proper candle counting from start time       |
+//|                    Cap candles waited at required count         |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
-#property version "1.08"
+#property version "1.10"
 
 #include "../Headers/Structures.mqh"
 #include "../Headers/Inputs.mqh"
@@ -32,32 +32,32 @@ enum ENUM_CANDLE_MODE
 //+------------------------------------------------------------------+
 struct SExhaustionResult
 {
-   bool     isValid;              // Valid exhaustion signal detected
-   bool     isBullish;            // Bullish exhaustion
-   bool     isBearish;            // Bearish exhaustion
-   bool     htfExhaustion;        // HTF (M15) exhaustion
-   bool     ltfExhaustion;        // LTF (M1) exhaustion
-   string   type;                 // "EXHAUSTION", "SLOWING", "NONE"
-   string   description;          // Human-readable description
-   double   confidence;           // 0-100 confidence in exhaustion
-   double   htfPullbackDepth;     // HTF pullback depth (%)
-   double   ltfPullbackDepth;     // LTF pullback depth (%)
+   bool     isValid;
+   bool     isBullish;
+   bool     isBearish;
+   bool     htfExhaustion;
+   bool     ltfExhaustion;
+   string   type;
+   string   description;
+   double   confidence;
+   double   htfPullbackDepth;
+   double   ltfPullbackDepth;
    datetime timestamp;
-   int      htfDirection;         // 1=BULLISH, -1=BEARISH, 0=NEUTRAL
-   bool     cooldownReset;        // Should cooldown be reset?
-   string   resetReason;          // Why cooldown should be reset
-   string   htfPattern;           // HTF pattern name
-   string   ltfPattern;           // LTF pattern name
-   double   htfPatternStrength;   // HTF pattern strength
-   double   ltfPatternStrength;   // LTF pattern strength
-   int      candlesWaited;        // Number of M15 candles waited so far
-   int      candlesRequired;      // Number of candles required before checking
-   string   waitStatus;           // Human-readable wait status
-   ENUM_CANDLE_MODE mode;         // Which mode was used
-   string   modeName;             // "COOLDOWN" or "TRADING"
-   bool     waitingForCandleClose;// True if waiting for current candle to close
-   bool     candleJustClosed;     // True if a candle just closed
-   datetime checkedCandleTime;    // Time of the candle that was checked
+   int      htfDirection;
+   bool     cooldownReset;
+   string   resetReason;
+   string   htfPattern;
+   string   ltfPattern;
+   double   htfPatternStrength;
+   double   ltfPatternStrength;
+   int      candlesWaited;
+   int      candlesRequired;
+   string   waitStatus;
+   ENUM_CANDLE_MODE mode;
+   string   modeName;
+   bool     waitingForCandleClose;
+   bool     candleJustClosed;
+   datetime checkedCandleTime;
 };
 
 //+------------------------------------------------------------------+
@@ -67,12 +67,12 @@ class CCandleModule
 {
 private:
    string   m_symbol;
-   ENUM_TIMEFRAMES m_htfTF;        // M15 - Higher timeframe
-   ENUM_TIMEFRAMES m_ltfTF;        // M1  - Lower timeframe
+   ENUM_TIMEFRAMES m_htfTF;
+   ENUM_TIMEFRAMES m_ltfTF;
    bool     m_debugEnabled;
    double   m_pointValue;
-   double   m_tolerance;           // 2 pips tolerance
-   int      m_waitCandleCount;     // Number of candles to wait (from input)
+   double   m_tolerance;
+   int      m_waitCandleCount;
    
    // ═══ CACHED VALUES ═══
    double   m_htfOpen;
@@ -98,18 +98,23 @@ private:
    datetime m_cooldownStartCandleTime;
    bool     m_cooldownCandleInitialized;
    bool     m_waitForNextCandle;
+   bool     m_waitingForClose;
    int      m_candlesWaited;
    datetime m_lastWaitLogTime;
-   bool     m_waitingForClose;
    
    // ═══ CANDLE CLOSE EVENT TRACKING ═══
-   datetime m_lastCheckedCandleTime;  // Time of the last candle we checked
-   bool     m_hasCheckedCandle;       // Whether we've checked the current candle
-   datetime m_candleCloseCheckTime;   // When we last checked for a close
+   datetime m_lastCheckedCandleTime;
+   bool     m_hasCheckedCandle;
+   datetime m_candleCloseCheckTime;
    
    // ═══ MODE CONFIGURATION ═══
-   double   m_cooldownConfidenceThreshold;  // Default: 60%
-   double   m_tradingConfidenceThreshold;   // Default: 50%
+   double   m_cooldownConfidenceThreshold;
+   double   m_tradingConfidenceThreshold;
+   
+   // ═══ STRICT RESET CONFIGURATION ═══
+   double   m_resetMinConfidence;
+   int      m_resetMinCooldownMinutes;
+   bool     m_resetRequireStrongPattern;
    
    // ═══ METHODS ═══
    bool     FetchCandleData(int shift = 0);
@@ -127,6 +132,8 @@ private:
    bool     IsCandleClosed(ENUM_TIMEFRAMES tf) const;
    bool     DidCandleJustClose(ENUM_TIMEFRAMES tf);
    datetime GetCandleTime(ENUM_TIMEFRAMES tf, int shift);
+   bool     IsStrongPatternForReset(string pattern);
+   int      CalculateCandlesWaited();
    SExhaustionResult AnalyzeExhaustionInternal(int trendDirection, ENUM_CANDLE_MODE mode, int candleShift = 0);
    
 public:
@@ -142,6 +149,7 @@ public:
    void SetWaitCandles(int count) { m_waitCandleCount = MathMax(1, MathMin(3, count)); }
    int GetWaitCandles() const { return m_waitCandleCount; }
    void SetConfidenceThresholds(double cooldownThreshold, double tradingThreshold);
+   void SetStrictResetStandards(double minConfidence, int minCooldownMinutes, bool requireStrongPattern);
    
    // ═══ INITIALIZATION ═══
    bool Initialize();
@@ -157,7 +165,7 @@ public:
    // ═══ MAIN ANALYSIS - DUAL MODE ═══
    SExhaustionResult AnalyzeExhaustion(int trendDirection, double cooldownRemaining = 0);
    
-   // ═══ COOLDOWN RESET CHECK ═══
+   // ═══ COOLDOWN RESET CHECK - STRICT STANDARDS ═══
    bool ShouldResetCooldown(int trendDirection, double cooldownRemaining);
    string GetResetReason(int trendDirection);
    
@@ -184,7 +192,7 @@ public:
 //=============================================================================
 CCandleModule::CCandleModule(string symbol, ENUM_TIMEFRAMES htfTF, ENUM_TIMEFRAMES ltfTF)
 {
-   LOG_DEBUG("🔧 CCandleModule v1.08 constructor called", g_debugCandleModule);
+   LOG_DEBUG("🔧 CCandleModule v1.10 constructor called", g_debugCandleModule);
    
    m_symbol = (symbol == NULL) ? _Symbol : symbol;
    m_htfTF = (htfTF == PERIOD_CURRENT) ? PERIOD_M15 : htfTF;
@@ -194,11 +202,16 @@ CCandleModule::CCandleModule(string symbol, ENUM_TIMEFRAMES htfTF, ENUM_TIMEFRAM
    m_tolerance = m_pointValue * 2;
    m_waitCandleCount = MathMax(1, MathMin(3, InpCandleWaitCandles));
    
-   // ═══ DEFAULT CONFIDENCE THRESHOLDS ═══
-   m_cooldownConfidenceThreshold = 60.0;   // Cooldown mode: need higher confidence
-   m_tradingConfidenceThreshold = 50.0;    // Trading mode: lower threshold for entry
+   // ═══ CONFIDENCE THRESHOLDS ═══
+   m_cooldownConfidenceThreshold = 70.0;
+   m_tradingConfidenceThreshold = 50.0;
    
-   // Clear cached values
+   // ═══ STRICT RESET STANDARDS ═══
+   m_resetMinConfidence = 75.0;
+   m_resetMinCooldownMinutes = 45;
+   m_resetRequireStrongPattern = true;
+   
+   // Clear all cached values
    m_htfOpen = 0; m_htfClose = 0; m_htfHigh = 0; m_htfLow = 0;
    m_htfPrevClose = 0; m_htfPrevHigh = 0; m_htfPrevLow = 0;
    m_htfPrevPrevHigh = 0; m_htfPrevPrevLow = 0;
@@ -207,24 +220,26 @@ CCandleModule::CCandleModule(string symbol, ENUM_TIMEFRAMES htfTF, ENUM_TIMEFRAM
    m_ltfPrevHigh = 0; m_ltfPrevLow = 0;
    m_ltfPrevPrevHigh = 0; m_ltfPrevPrevLow = 0;
    
+   // Clear cooldown tracking
    m_cooldownStartCandleTime = 0;
    m_cooldownCandleInitialized = false;
    m_waitForNextCandle = false;
    m_waitingForClose = false;
    m_candlesWaited = 0;
    m_lastWaitLogTime = 0;
-   
-   // ═══ INITIALIZE CANDLE CLOSE TRACKING ═══
    m_lastCheckedCandleTime = 0;
    m_hasCheckedCandle = false;
    m_candleCloseCheckTime = 0;
    
-   LOG_DEBUG("✅ CCandleModule v1.08 created", g_debugCandleModule);
+   LOG_DEBUG("✅ CCandleModule v1.10 created (FIXED COOLDOWN TRACKING)", g_debugCandleModule);
    LOG_DEBUG("   HTF: M15 | LTF: M1", g_debugCandleModule);
    LOG_DEBUG("   Cooldown Mode: Wait " + IntegerToString(m_waitCandleCount) + " candles, Threshold: " + DoubleToString(m_cooldownConfidenceThreshold, 0) + "%", g_debugCandleModule);
    LOG_DEBUG("   Trading Mode: Check when candle closes, Threshold: " + DoubleToString(m_tradingConfidenceThreshold, 0) + "%", g_debugCandleModule);
-   LOG_DEBUG("   📋 Mode selected based on cooldownRemaining > 0", g_debugCandleModule);
-   LOG_DEBUG("   🔧 FIX v1.08: Track candle close events - check immediately when candle closes", g_debugCandleModule);
+   LOG_DEBUG("   🔒 STRICT RESET STANDARDS:", g_debugCandleModule);
+   LOG_DEBUG("      Min Confidence: " + DoubleToString(m_resetMinConfidence, 0) + "%", g_debugCandleModule);
+   LOG_DEBUG("      Min Cooldown Remaining: " + IntegerToString(m_resetMinCooldownMinutes) + " min", g_debugCandleModule);
+   LOG_DEBUG("      Require Strong Pattern (ENGULFING/PIN_BAR): " + (m_resetRequireStrongPattern ? "YES" : "NO"), g_debugCandleModule);
+   LOG_DEBUG("   🔧 FIX v1.10: Reset ALL tracking variables on cooldown", g_debugCandleModule);
 }
 
 //=============================================================================
@@ -248,6 +263,30 @@ void CCandleModule::SetConfidenceThresholds(double cooldownThreshold, double tra
 }
 
 //=============================================================================
+// SET STRICT RESET STANDARDS
+//=============================================================================
+void CCandleModule::SetStrictResetStandards(double minConfidence, int minCooldownMinutes, bool requireStrongPattern)
+{
+   m_resetMinConfidence = MathMax(50.0, MathMin(95.0, minConfidence));
+   m_resetMinCooldownMinutes = MathMax(15, MathMin(120, minCooldownMinutes));
+   m_resetRequireStrongPattern = requireStrongPattern;
+   
+   LOG_DEBUG("🔒 STRICT RESET STANDARDS UPDATED:", m_debugEnabled);
+   LOG_DEBUG("   Min Confidence: " + DoubleToString(m_resetMinConfidence, 0) + "%", m_debugEnabled);
+   LOG_DEBUG("   Min Cooldown Remaining: " + IntegerToString(m_resetMinCooldownMinutes) + " min", m_debugEnabled);
+   LOG_DEBUG("   Require Strong Pattern: " + (m_resetRequireStrongPattern ? "YES" : "NO"), m_debugEnabled);
+}
+
+//=============================================================================
+// IS STRONG PATTERN FOR RESET
+//=============================================================================
+bool CCandleModule::IsStrongPatternForReset(string pattern)
+{
+   if(!m_resetRequireStrongPattern) return true;
+   return (pattern == "ENGULFING" || pattern == "PIN_BAR");
+}
+
+//=============================================================================
 // INITIALIZE
 //=============================================================================
 bool CCandleModule::Initialize()
@@ -265,59 +304,74 @@ void CCandleModule::Shutdown()
 }
 
 //=============================================================================
-// RESET COOLDOWN CANDLE TRACKING
+// CALCULATE CANDLES WAITED - HELPER METHOD
+//=============================================================================
+int CCandleModule::CalculateCandlesWaited()
+{
+   if(m_cooldownStartCandleTime <= 0) return 0;
+   
+   bool candleClosed = IsCandleClosed(m_htfTF);
+   int shift = candleClosed ? 0 : 1;
+   datetime lastClosedCandleTime = iTime(m_symbol, m_htfTF, shift);
+   
+   if(lastClosedCandleTime <= 0) return 0;
+   
+   int closedCandlesWaited = 0;
+   
+   if(lastClosedCandleTime > m_cooldownStartCandleTime)
+   {
+      int diffSeconds = (int)(lastClosedCandleTime - m_cooldownStartCandleTime);
+      closedCandlesWaited = diffSeconds / 900;  // 900 seconds = 15 minutes
+   }
+   else if(lastClosedCandleTime == m_cooldownStartCandleTime)
+   {
+      closedCandlesWaited = 1;
+   }
+   else
+   {
+      closedCandlesWaited = 0;
+   }
+   
+   // ★★★ CAP AT REQUIRED COUNT TO PREVENT "92/2" BUG ★★★
+   if(closedCandlesWaited > m_waitCandleCount)
+      closedCandlesWaited = m_waitCandleCount;
+   
+   return closedCandlesWaited;
+}
+
+//=============================================================================
+// RESET COOLDOWN CANDLE TRACKING - FIXED v1.10
 //=============================================================================
 void CCandleModule::ResetCooldownCandleTracking()
 {
+   // ★★★ CRITICAL FIX: Reset ALL tracking variables ★★★
    m_cooldownStartCandleTime = iTime(m_symbol, m_htfTF, 0);
    m_cooldownCandleInitialized = true;
    m_waitForNextCandle = true;
    m_waitingForClose = true;
-   m_candlesWaited = 0;
+   m_candlesWaited = 0;                    // ★ MUST RESET TO ZERO ★
    m_lastWaitLogTime = 0;
+   m_lastCheckedCandleTime = 0;            // ★ RESET CANDLE TRACKING ★
+   m_hasCheckedCandle = false;             // ★ RESET CHECK STATUS ★
+   m_candleCloseCheckTime = 0;             // ★ RESET CLOSE CHECK ★
    
-   LOG_DEBUG("🕯️ COOLDOWN STARTED", m_debugEnabled);
+   LOG_DEBUG("🕯️ COOLDOWN STARTED (CLEAN RESET v1.10)", m_debugEnabled);
    LOG_DEBUG("   Start Candle Time: " + TimeToString(m_cooldownStartCandleTime), m_debugEnabled);
    LOG_DEBUG("   Will wait: " + IntegerToString(m_waitCandleCount) + " M15 candles", m_debugEnabled);
+   LOG_DEBUG("   Candles Waited: 0 (fresh start)", m_debugEnabled);
    LOG_DEBUG("   Mode: COOLDOWN (cooldownRemaining > 0)", m_debugEnabled);
 }
 
 //=============================================================================
-// GET CANDLE WAIT STATUS
+// GET CANDLE WAIT STATUS - FIXED v1.10
 //=============================================================================
 string CCandleModule::GetCandleWaitStatus()
 {
    if(!m_waitForNextCandle && !m_waitingForClose) return "✅ Ready - checking exhaustion";
    if(!m_cooldownCandleInitialized) return "⏳ Not initialized";
    
-   datetime currentTime = TimeCurrent();
-   datetime currentCandleTime = iTime(m_symbol, m_htfTF, 0);
-   bool candleClosed = IsCandleClosed(m_htfTF);
-   
-   int closedCandlesWaited = 0;
-   if(m_cooldownStartCandleTime > 0)
-   {
-      int shift = 0;
-      if(!candleClosed) shift = 1;
-      
-      datetime lastClosedCandleTime = iTime(m_symbol, m_htfTF, shift);
-      
-      if(lastClosedCandleTime > m_cooldownStartCandleTime)
-      {
-         int diffSeconds = (int)(lastClosedCandleTime - m_cooldownStartCandleTime);
-         closedCandlesWaited = diffSeconds / 900;
-      }
-      else if(lastClosedCandleTime == m_cooldownStartCandleTime)
-      {
-         closedCandlesWaited = 1;
-      }
-      else if(lastClosedCandleTime < m_cooldownStartCandleTime)
-      {
-         closedCandlesWaited = 0;
-      }
-      
-      m_candlesWaited = closedCandlesWaited;
-   }
+   int closedCandlesWaited = CalculateCandlesWaited();
+   m_candlesWaited = closedCandlesWaited;
    
    if(closedCandlesWaited >= m_waitCandleCount)
       return StringFormat("✅ Ready - have %d of %d closed candles", closedCandlesWaited, m_waitCandleCount);
@@ -355,16 +409,11 @@ bool CCandleModule::DidCandleJustClose(ENUM_TIMEFRAMES tf)
    datetime currentTime = TimeCurrent();
    int secondsPerCandle = PeriodSeconds(tf);
    
-   // Check if we have a new candle time
    if(currentCandleTime != m_lastCheckedCandleTime)
    {
-      // The previous candle closed
       datetime previousCandleTime = GetCandleTime(tf, 1);
-      
-      // Check if the previous candle is fully closed
       if(currentTime >= previousCandleTime + secondsPerCandle)
       {
-         // Previous candle is closed
          m_lastCheckedCandleTime = currentCandleTime;
          m_hasCheckedCandle = false;
          return true;
@@ -378,7 +427,6 @@ bool CCandleModule::DidCandleJustClose(ENUM_TIMEFRAMES tf)
 //=============================================================================
 int CCandleModule::GetClosedCandleShift(ENUM_TIMEFRAMES tf)
 {
-   // Always return the most recent closed candle
    return IsCandleClosed(tf) ? 0 : 1;
 }
 
@@ -390,7 +438,6 @@ bool CCandleModule::FetchCandleData(int shift)
    int htfShift = shift;
    int ltfShift = GetClosedCandleShift(m_ltfTF);
    
-   // If shift is 0 and candle is not closed, use shift 1
    if(htfShift == 0 && !IsCandleClosed(m_htfTF))
       htfShift = 1;
    
@@ -501,20 +548,6 @@ bool CCandleModule::IsPinBarCandle(ENUM_TIMEFRAMES tf)
 }
 
 //=============================================================================
-// GET CANDLE PATTERN
-//=============================================================================
-string CCandleModule::GetCandlePattern(ENUM_TIMEFRAMES tf)
-{
-   if(IsDojiCandle(tf)) return "DOJI";
-   if(IsEngulfingCandle(tf)) return "ENGULFING";
-   if(IsInsideCandle(tf)) return "INSIDE";
-   if(IsPinBarCandle(tf)) return "PIN_BAR";
-   if(IsExhaustionCandle(tf, 1)) return "BULLISH_EXHAUSTION";
-   if(IsExhaustionCandle(tf, -1)) return "BEARISH_EXHAUSTION";
-   return "NORMAL";
-}
-
-//=============================================================================
 // IS ENGULFING CANDLE
 //=============================================================================
 bool CCandleModule::IsEngulfingCandle(ENUM_TIMEFRAMES tf)
@@ -541,6 +574,20 @@ bool CCandleModule::IsInsideCandle(ENUM_TIMEFRAMES tf)
    double prevHigh = iHigh(m_symbol, tf, closedShift + 1);
    double prevLow = iLow(m_symbol, tf, closedShift + 1);
    return high < prevHigh && low > prevLow;
+}
+
+//=============================================================================
+// GET CANDLE PATTERN
+//=============================================================================
+string CCandleModule::GetCandlePattern(ENUM_TIMEFRAMES tf)
+{
+   if(IsDojiCandle(tf)) return "DOJI";
+   if(IsEngulfingCandle(tf)) return "ENGULFING";
+   if(IsInsideCandle(tf)) return "INSIDE";
+   if(IsPinBarCandle(tf)) return "PIN_BAR";
+   if(IsExhaustionCandle(tf, 1)) return "BULLISH_EXHAUSTION";
+   if(IsExhaustionCandle(tf, -1)) return "BEARISH_EXHAUSTION";
+   return "NORMAL";
 }
 
 //=============================================================================
@@ -597,7 +644,7 @@ double CCandleModule::GetPullbackDepth(ENUM_TIMEFRAMES tf, int lookback)
 }
 
 //=============================================================================
-// ANALYZE EXHAUSTION INTERNAL - Core Analysis Logic
+// ANALYZE EXHAUSTION INTERNAL
 //=============================================================================
 SExhaustionResult CCandleModule::AnalyzeExhaustionInternal(int trendDirection, ENUM_CANDLE_MODE mode, int candleShift)
 {
@@ -624,7 +671,6 @@ SExhaustionResult CCandleModule::AnalyzeExhaustionInternal(int trendDirection, E
    
    LOG_DEBUG("📋 INTERNAL ANALYSIS - Mode: " + result.modeName + " (Shift: " + IntegerToString(candleShift) + ")", m_debugEnabled);
    
-   // ─── FETCH DATA ───
    if(!FetchCandleData(candleShift))
    {
       result.description = "Failed to fetch candle data";
@@ -632,18 +678,15 @@ SExhaustionResult CCandleModule::AnalyzeExhaustionInternal(int trendDirection, E
       return result;
    }
    
-   // Store the candle time we're checking
    result.checkedCandleTime = GetCandleTime(m_htfTF, candleShift);
    
    LOG_DEBUG("✅ Candle data fetched for candle at: " + TimeToString(result.checkedCandleTime), m_debugEnabled);
    
-   // ─── CALCULATE PULLBACK DEPTHS ───
    result.htfPullbackDepth = GetPullbackDepth(m_htfTF, 5);
    result.ltfPullbackDepth = GetPullbackDepth(m_ltfTF, 3);
    LOG_DEBUG("   HTF Pullback: " + DoubleToString(result.htfPullbackDepth, 1) + "%", m_debugEnabled);
    LOG_DEBUG("   LTF Pullback: " + DoubleToString(result.ltfPullbackDepth, 1) + "%", m_debugEnabled);
    
-   // ─── GET PATTERNS ───
    result.htfPattern = GetCandlePattern(m_htfTF);
    result.ltfPattern = GetCandlePattern(m_ltfTF);
    result.htfPatternStrength = GetPatternStrength(m_htfTF);
@@ -651,7 +694,6 @@ SExhaustionResult CCandleModule::AnalyzeExhaustionInternal(int trendDirection, E
    LOG_DEBUG("   HTF Pattern: " + result.htfPattern + " (" + DoubleToString(result.htfPatternStrength, 0) + "%)", m_debugEnabled);
    LOG_DEBUG("   LTF Pattern: " + result.ltfPattern + " (" + DoubleToString(result.ltfPatternStrength, 0) + "%)", m_debugEnabled);
    
-   // ─── EXHAUSTION CHECKS ───
    double tol = m_tolerance;
    
    // HTF Exhaustion
@@ -690,7 +732,6 @@ SExhaustionResult CCandleModule::AnalyzeExhaustionInternal(int trendDirection, E
    LOG_DEBUG("   LTF Exhaustion (Bull): " + (ltfExhaustionBull ? "✅" : "❌"), m_debugEnabled);
    LOG_DEBUG("   LTF Exhaustion (Bear): " + (ltfExhaustionBear ? "✅" : "❌"), m_debugEnabled);
    
-   // ─── DECISION BASED ON TREND DIRECTION ───
    if(trendDirection == 1)
    {
       LOG_DEBUG("📊 TREND: BULLISH", m_debugEnabled);
@@ -713,7 +754,6 @@ SExhaustionResult CCandleModule::AnalyzeExhaustionInternal(int trendDirection, E
          result.type = ltfExhaustionBull ? "EXHAUSTION" : "SLOWING";
          result.description = (ltfExhaustionBull) ? "HTF+LTF EXHAUSTION ✅" : "HTF OK + LTF SLOWING ✅";
          
-         // Confidence calculation
          result.confidence = ltfExhaustionBull ? 85.0 : 70.0;
          string pattern = GetCandlePattern(m_htfTF);
          if(pattern == "ENGULFING" || pattern == "PIN_BAR") result.confidence += 10.0;
@@ -790,8 +830,7 @@ SExhaustionResult CCandleModule::AnalyzeExhaustionInternal(int trendDirection, E
 }
 
 //=============================================================================
-// ANALYZE EXHAUSTION - DUAL MODE ENTRY POINT
-// ═══ FIX v1.08: Track candle close events ═══
+// ANALYZE EXHAUSTION - DUAL MODE (FIXED v1.10)
 //=============================================================================
 SExhaustionResult CCandleModule::AnalyzeExhaustion(int trendDirection, double cooldownRemaining)
 {
@@ -799,13 +838,11 @@ SExhaustionResult CCandleModule::AnalyzeExhaustion(int trendDirection, double co
    ZeroMemory(result);
    
    LOG_DEBUG("═══════════════════════════════════════════", m_debugEnabled);
-   LOG_DEBUG("🕯️ ANALYZE EXHAUSTION - v1.08", m_debugEnabled);
+   LOG_DEBUG("🕯️ ANALYZE EXHAUSTION - v1.10", m_debugEnabled);
    LOG_DEBUG("   Trend Direction: " + (trendDirection == 1 ? "BULLISH" : trendDirection == -1 ? "BEARISH" : "NEUTRAL"), m_debugEnabled);
    LOG_DEBUG("   Cooldown Remaining: " + DoubleToString(cooldownRemaining, 0) + "s", m_debugEnabled);
-   LOG_DEBUG("   Last Checked Candle: " + TimeToString(m_lastCheckedCandleTime), m_debugEnabled);
    LOG_DEBUG("═══════════════════════════════════════════", m_debugEnabled);
    
-   // ─── DETERMINE MODE ───
    bool isCooldown = (cooldownRemaining > 0);
    ENUM_CANDLE_MODE mode = isCooldown ? CANDLE_MODE_COOLDOWN : CANDLE_MODE_TRADING;
    
@@ -822,36 +859,15 @@ SExhaustionResult CCandleModule::AnalyzeExhaustion(int trendDirection, double co
    
    if(mode == CANDLE_MODE_COOLDOWN)
    {
-      // ═══════════════════════════════════════════════════════════════
-      // ═══ COOLDOWN MODE: Wait 1-3 candles, higher threshold ═══
-      // ═══════════════════════════════════════════════════════════════
-      
       LOG_DEBUG("───────────────────────────────────────────", m_debugEnabled);
       LOG_DEBUG("🔄 COOLDOWN MODE ACTIVE", m_debugEnabled);
       LOG_DEBUG("   Waiting: " + IntegerToString(m_waitCandleCount) + " M15 candles", m_debugEnabled);
       LOG_DEBUG("   Confidence Threshold: " + DoubleToString(m_cooldownConfidenceThreshold, 0) + "%", m_debugEnabled);
       LOG_DEBUG("───────────────────────────────────────────", m_debugEnabled);
       
-      // ─── COOLDOWN WAIT CHECK ───
-      bool candleClosed = IsCandleClosed(m_htfTF);
-      int closedCandlesWaited = 0;
-      
-      if(m_cooldownStartCandleTime > 0)
-      {
-         int shift = candleClosed ? 0 : 1;
-         datetime lastClosedCandleTime = iTime(m_symbol, m_htfTF, shift);
-         
-         if(lastClosedCandleTime > m_cooldownStartCandleTime)
-         {
-            int diffSeconds = (int)(lastClosedCandleTime - m_cooldownStartCandleTime);
-            closedCandlesWaited = diffSeconds / 900;
-         }
-         else if(lastClosedCandleTime == m_cooldownStartCandleTime)
-         {
-            closedCandlesWaited = 1;
-         }
-         m_candlesWaited = closedCandlesWaited;
-      }
+      // ★★★ FIX: Use CalculateCandlesWaited() helper ★★★
+      int closedCandlesWaited = CalculateCandlesWaited();
+      m_candlesWaited = closedCandlesWaited;
       
       result.candlesWaited = closedCandlesWaited;
       result.candlesRequired = m_waitCandleCount;
@@ -876,11 +892,9 @@ SExhaustionResult CCandleModule::AnalyzeExhaustion(int trendDirection, double co
       result.waitStatus = "✅ Cooldown: Ready - " + IntegerToString(closedCandlesWaited) + " candles waited";
       LOG_DEBUG("✅ " + result.waitStatus, m_debugEnabled);
       
-      // ─── RUN ANALYSIS ───
       LOG_DEBUG("🔍 Running exhaustion analysis (Cooldown Mode)...", m_debugEnabled);
       result = AnalyzeExhaustionInternal(trendDirection, mode, 0);
       
-      // ─── APPLY COOLDOWN THRESHOLD ───
       if(result.isValid && result.confidence < m_cooldownConfidenceThreshold)
       {
          result.isValid = false;
@@ -906,26 +920,18 @@ SExhaustionResult CCandleModule::AnalyzeExhaustion(int trendDirection, double co
    }
    else
    {
-      // ═══════════════════════════════════════════════════════════════
-      // ═══ TRADING MODE: Check when candle closes ═══
-      // ═══ FIX v1.08: Track candle close events ═══
-      // ═══════════════════════════════════════════════════════════════
-      
       LOG_DEBUG("───────────────────────────────────────────", m_debugEnabled);
       LOG_DEBUG("📈 TRADING MODE ACTIVE", m_debugEnabled);
       LOG_DEBUG("   Strategy: Check when M15 candle closes", m_debugEnabled);
       LOG_DEBUG("   Confidence Threshold: " + DoubleToString(m_tradingConfidenceThreshold, 0) + "%", m_debugEnabled);
       LOG_DEBUG("───────────────────────────────────────────", m_debugEnabled);
       
-      // ─── STEP 1: CHECK IF A CANDLE JUST CLOSED ───
       bool candleJustClosed = DidCandleJustClose(m_htfTF);
       
       if(candleJustClosed)
       {
-         // ─── A CANDLE JUST CLOSED - CHECK IT! ───
          datetime closedCandleTime = GetCandleTime(m_htfTF, 1);
          LOG_DEBUG("✅ CANDLE JUST CLOSED! Checking exhaustion on candle at: " + TimeToString(closedCandleTime), m_debugEnabled);
-         LOG_DEBUG("   This is the candle that just closed - analyzing now!", m_debugEnabled);
          
          result.candleJustClosed = true;
          result.checkedCandleTime = closedCandleTime;
@@ -934,13 +940,9 @@ SExhaustionResult CCandleModule::AnalyzeExhaustion(int trendDirection, double co
          result.waitingForCandleClose = false;
          result.waitStatus = "✅ Candle just closed - checking exhaustion now!";
          
-         // ─── RUN ANALYSIS ON THE CLOSED CANDLE (shift 1) ───
          result = AnalyzeExhaustionInternal(trendDirection, mode, 1);
-         
-         // Mark that we've checked this candle
          m_hasCheckedCandle = true;
          
-         // ─── APPLY TRADING THRESHOLD ───
          if(result.isValid && result.confidence < m_tradingConfidenceThreshold)
          {
             result.isValid = false;
@@ -957,8 +959,6 @@ SExhaustionResult CCandleModule::AnalyzeExhaustion(int trendDirection, double co
             LOG_DEBUG("   Confidence: " + DoubleToString(result.confidence, 0) + "%", m_debugEnabled);
             LOG_DEBUG("   HTF Pattern: " + result.htfPattern + " (" + DoubleToString(result.htfPatternStrength, 0) + "%)", m_debugEnabled);
             LOG_DEBUG("   LTF Pattern: " + result.ltfPattern + " (" + DoubleToString(result.ltfPatternStrength, 0) + "%)", m_debugEnabled);
-            LOG_DEBUG("   Type: " + result.type, m_debugEnabled);
-            LOG_DEBUG("   ✅ Data aligned: Same candle used for both Trend and Exhaustion", m_debugEnabled);
          }
          else
          {
@@ -968,12 +968,10 @@ SExhaustionResult CCandleModule::AnalyzeExhaustion(int trendDirection, double co
          return result;
       }
       
-      // ─── STEP 2: CHECK IF CURRENT CANDLE IS CLOSED ───
       bool currentCandleClosed = IsCandleClosed(m_htfTF);
       
       if(currentCandleClosed)
       {
-         // ─── CURRENT CANDLE IS CLOSED - CHECK IT ───
          datetime currentCandleTime = GetCandleTime(m_htfTF, 0);
          LOG_DEBUG("✅ Current candle is closed! Checking exhaustion at: " + TimeToString(currentCandleTime), m_debugEnabled);
          
@@ -984,10 +982,8 @@ SExhaustionResult CCandleModule::AnalyzeExhaustion(int trendDirection, double co
          result.waitingForCandleClose = false;
          result.waitStatus = "✅ Current candle is closed - checking exhaustion";
          
-         // ─── RUN ANALYSIS ───
          result = AnalyzeExhaustionInternal(trendDirection, mode, 0);
          
-         // ─── APPLY TRADING THRESHOLD ───
          if(result.isValid && result.confidence < m_tradingConfidenceThreshold)
          {
             result.isValid = false;
@@ -1004,7 +1000,6 @@ SExhaustionResult CCandleModule::AnalyzeExhaustion(int trendDirection, double co
             LOG_DEBUG("   Confidence: " + DoubleToString(result.confidence, 0) + "%", m_debugEnabled);
             LOG_DEBUG("   HTF Pattern: " + result.htfPattern + " (" + DoubleToString(result.htfPatternStrength, 0) + "%)", m_debugEnabled);
             LOG_DEBUG("   LTF Pattern: " + result.ltfPattern + " (" + DoubleToString(result.ltfPatternStrength, 0) + "%)", m_debugEnabled);
-            LOG_DEBUG("   Type: " + result.type, m_debugEnabled);
          }
          else
          {
@@ -1014,7 +1009,6 @@ SExhaustionResult CCandleModule::AnalyzeExhaustion(int trendDirection, double co
          return result;
       }
       
-      // ─── STEP 3: WAIT FOR CANDLE CLOSE ───
       datetime currentCandleTime = GetCandleTime(m_htfTF, 0);
       datetime currentTime = TimeCurrent();
       int secondsPerCandle = PeriodSeconds(m_htfTF);
@@ -1033,9 +1027,6 @@ SExhaustionResult CCandleModule::AnalyzeExhaustion(int trendDirection, double co
       result.checkedCandleTime = currentCandleTime;
       
       LOG_DEBUG("⏳ " + result.waitStatus, m_debugEnabled);
-      LOG_DEBUG("   Current Candle Time: " + TimeToString(currentCandleTime), m_debugEnabled);
-      LOG_DEBUG("   Current Time: " + TimeToString(currentTime), m_debugEnabled);
-      LOG_DEBUG("   Will close at: " + TimeToString(currentCandleTime + secondsPerCandle), m_debugEnabled);
       LOG_DEBUG("   ❌ Trading Mode: Waiting for candle close - EXITING", m_debugEnabled);
       
       return result;
@@ -1046,48 +1037,86 @@ SExhaustionResult CCandleModule::AnalyzeExhaustion(int trendDirection, double co
    LOG_DEBUG("   Mode: " + result.modeName, m_debugEnabled);
    LOG_DEBUG("   Valid: " + (result.isValid ? "✅ YES" : "❌ NO"), m_debugEnabled);
    LOG_DEBUG("   Confidence: " + DoubleToString(result.confidence, 0) + "%", m_debugEnabled);
-   LOG_DEBUG("   Candle Just Closed: " + (result.candleJustClosed ? "✅ YES" : "❌ NO"), m_debugEnabled);
-   LOG_DEBUG("   Waiting for Candle Close: " + (result.waitingForCandleClose ? "✅ YES" : "❌ NO"), m_debugEnabled);
    LOG_DEBUG("═══════════════════════════════════════════", m_debugEnabled);
    
    return result;
 }
 
 //=============================================================================
-// SHOULD RESET COOLDOWN - Uses Cooldown Mode
+// SHOULD RESET COOLDOWN - STRICT STANDARDS
 //=============================================================================
 bool CCandleModule::ShouldResetCooldown(int trendDirection, double cooldownRemaining)
 {
-   LOG_DEBUG("🔄 ShouldResetCooldown called", m_debugEnabled);
+   LOG_DEBUG("═══════════════════════════════════════════", m_debugEnabled);
+   LOG_DEBUG("🔒 SHOULD RESET COOLDOWN - STRICT MODE", m_debugEnabled);
    LOG_DEBUG("   Trend: " + (trendDirection == 1 ? "BULLISH" : trendDirection == -1 ? "BEARISH" : "NEUTRAL"), m_debugEnabled);
-   LOG_DEBUG("   Cooldown Remaining: " + DoubleToString(cooldownRemaining, 0) + "s", m_debugEnabled);
+   LOG_DEBUG("   Cooldown Remaining: " + DoubleToString(cooldownRemaining, 0) + "s (" + 
+             DoubleToString(cooldownRemaining/60, 0) + " min)", m_debugEnabled);
+   LOG_DEBUG("═══════════════════════════════════════════", m_debugEnabled);
    
+   // ─── CHECK 1: Is there a cooldown? ───
    if(cooldownRemaining <= 0) 
    {
-      LOG_DEBUG("❌ No cooldown - skipping reset check", m_debugEnabled);
-      return false;
-   }
-   if(cooldownRemaining < 1800) 
-   {
-      LOG_DEBUG("⏳ Cooldown almost over (" + DoubleToString(cooldownRemaining/60, 0) + " min) - waiting it out", m_debugEnabled);
+      LOG_DEBUG("❌ No cooldown active - skipping reset check", m_debugEnabled);
       return false;
    }
    
-   LOG_DEBUG("📋 Cooldown > 30 min - checking for exhaustion reset", m_debugEnabled);
+   // ─── CHECK 2: Minimum cooldown remaining (45 min) ───
+   if(cooldownRemaining < (m_resetMinCooldownMinutes * 60))
+   {
+      LOG_DEBUG("❌ Cooldown remaining (" + DoubleToString(cooldownRemaining/60, 0) + 
+                "min) < required " + IntegerToString(m_resetMinCooldownMinutes) + "min - NO RESET", m_debugEnabled);
+      return false;
+   }
+   LOG_DEBUG("✅ Cooldown remaining: " + DoubleToString(cooldownRemaining/60, 0) + 
+             "min ≥ " + IntegerToString(m_resetMinCooldownMinutes) + "min - PASSED", m_debugEnabled);
+   
+   // ─── CHECK 3: Run exhaustion analysis ───
+   LOG_DEBUG("🔍 Running exhaustion analysis for reset...", m_debugEnabled);
    SExhaustionResult result = AnalyzeExhaustion(trendDirection, cooldownRemaining);
    
-   if(result.isValid && result.cooldownReset && result.confidence >= 60.0)
+   // ─── CHECK 4: Minimum confidence (75%) ───
+   if(!result.isValid || !result.cooldownReset)
    {
-      LOG_DEBUG("🔄 COOLDOWN RESET RECOMMENDED!", m_debugEnabled);
-      LOG_DEBUG("   Reason: " + result.resetReason, m_debugEnabled);
-      LOG_DEBUG("   Confidence: " + DoubleToString(result.confidence, 0) + "%", m_debugEnabled);
-      LOG_DEBUG("   HTF: " + result.htfPattern + " (" + DoubleToString(result.htfPatternStrength, 0) + "%)", m_debugEnabled);
-      LOG_DEBUG("   LTF: " + result.ltfPattern + " (" + DoubleToString(result.ltfPatternStrength, 0) + "%)", m_debugEnabled);
-      return true;
+      LOG_DEBUG("❌ Invalid exhaustion or no reset recommended - NO RESET", m_debugEnabled);
+      LOG_DEBUG("   isValid: " + (result.isValid ? "YES" : "NO"), m_debugEnabled);
+      LOG_DEBUG("   cooldownReset: " + (result.cooldownReset ? "YES" : "NO"), m_debugEnabled);
+      return false;
    }
    
-   LOG_DEBUG("❌ No reset needed - continuing cooldown", m_debugEnabled);
-   return false;
+   if(result.confidence < m_resetMinConfidence)
+   {
+      LOG_DEBUG("❌ Confidence (" + DoubleToString(result.confidence, 0) + 
+                "%) < required " + DoubleToString(m_resetMinConfidence, 0) + "% - NO RESET", m_debugEnabled);
+      return false;
+   }
+   LOG_DEBUG("✅ Confidence: " + DoubleToString(result.confidence, 0) + 
+             "% ≥ " + DoubleToString(m_resetMinConfidence, 0) + "% - PASSED", m_debugEnabled);
+   
+   // ─── CHECK 5: Strong pattern requirement (ENGULFING/PIN_BAR) ───
+   if(m_resetRequireStrongPattern)
+   {
+      string pattern = result.htfPattern;
+      if(!IsStrongPatternForReset(pattern))
+      {
+         LOG_DEBUG("❌ Pattern '" + pattern + "' not strong enough - NO RESET", m_debugEnabled);
+         LOG_DEBUG("   Required: ENGULFING or PIN_BAR", m_debugEnabled);
+         return false;
+      }
+      LOG_DEBUG("✅ Strong pattern: " + pattern + " - PASSED", m_debugEnabled);
+   }
+   
+   // ─── ALL CHECKS PASSED - RESET COOLDOWN ───
+   LOG_DEBUG("═══════════════════════════════════════════", m_debugEnabled);
+   LOG_DEBUG("🔄✅ COOLDOWN RESET APPROVED!", m_debugEnabled);
+   LOG_DEBUG("   Reason: " + result.resetReason, m_debugEnabled);
+   LOG_DEBUG("   Confidence: " + DoubleToString(result.confidence, 0) + "%", m_debugEnabled);
+   LOG_DEBUG("   HTF Pattern: " + result.htfPattern + " (" + DoubleToString(result.htfPatternStrength, 0) + "%)", m_debugEnabled);
+   LOG_DEBUG("   LTF Pattern: " + result.ltfPattern + " (" + DoubleToString(result.ltfPatternStrength, 0) + "%)", m_debugEnabled);
+   LOG_DEBUG("   Cooldown Remaining: " + DoubleToString(cooldownRemaining/60, 0) + " min", m_debugEnabled);
+   LOG_DEBUG("═══════════════════════════════════════════", m_debugEnabled);
+   
+   return true;
 }
 
 //=============================================================================
@@ -1096,7 +1125,20 @@ bool CCandleModule::ShouldResetCooldown(int trendDirection, double cooldownRemai
 string CCandleModule::GetResetReason(int trendDirection)
 {
    SExhaustionResult result = AnalyzeExhaustion(trendDirection, 7200);
-   return (result.isValid && result.cooldownReset) ? result.resetReason : "No exhaustion detected";
+   
+   if(result.isValid && result.cooldownReset && result.confidence >= m_resetMinConfidence)
+   {
+      if(m_resetRequireStrongPattern && !IsStrongPatternForReset(result.htfPattern))
+         return "Pattern not strong enough (requires ENGULFING/PIN_BAR)";
+      
+      return result.resetReason;
+   }
+   
+   if(result.confidence < m_resetMinConfidence)
+      return "Confidence too low (" + DoubleToString(result.confidence, 0) + "% < " + 
+             DoubleToString(m_resetMinConfidence, 0) + "%)";
+   
+   return "No exhaustion detected";
 }
 
 //=============================================================================
@@ -1108,13 +1150,20 @@ string CCandleModule::GetStatusReport()
    
    string report = "";
    report += "═══════════════════════════════════════════\n";
-   report += "🕯️ CANDLE MODULE STATUS REPORT (v1.08)\n";
+   report += "🕯️ CANDLE MODULE STATUS REPORT (v1.10)\n";
    report += "───────────────────────────────────────────\n";
    report += "COOLDOWN MODE: Wait " + IntegerToString(m_waitCandleCount) + " candles, Threshold " + 
              DoubleToString(m_cooldownConfidenceThreshold, 0) + "%\n";
    report += "TRADING MODE:  Check when candle closes, Threshold " + 
              DoubleToString(m_tradingConfidenceThreshold, 0) + "%\n";
    report += "───────────────────────────────────────────\n";
+   report += "🔒 STRICT RESET STANDARDS:\n";
+   report += "   Min Confidence: " + DoubleToString(m_resetMinConfidence, 0) + "%\n";
+   report += "   Min Cooldown: " + IntegerToString(m_resetMinCooldownMinutes) + " min\n";
+   report += "   Strong Pattern Required: " + (m_resetRequireStrongPattern ? "YES (ENGULFING/PIN_BAR)" : "NO") + "\n";
+   report += "───────────────────────────────────────────\n";
+   report += "Cooldown Start Candle: " + TimeToString(m_cooldownStartCandleTime) + "\n";
+   report += "Candles Waited: " + IntegerToString(m_candlesWaited) + "/" + IntegerToString(m_waitCandleCount) + "\n";
    report += "Last Checked Candle: " + TimeToString(m_lastCheckedCandleTime) + "\n";
    report += "Has Checked Current Candle: " + (m_hasCheckedCandle ? "YES" : "NO") + "\n";
    report += "Current M15 Candle: " + GetCurrentCandleStatus() + "\n";
@@ -1147,7 +1196,7 @@ string CCandleModule::GetExhaustionReport(SExhaustionResult &result)
 {
    string report = "";
    report += "═══════════════════════════════════════════\n";
-   report += "🕯️ EXHAUSTION REPORT\n";
+   report += "🕯️ EXHAUSTION REPORT (v1.10)\n";
    report += "───────────────────────────────────────────\n";
    report += StringFormat("Mode: %s\n", result.modeName);
    report += StringFormat("Valid: %s\n", result.isValid ? "✅ YES" : "❌ NO");
@@ -1159,18 +1208,28 @@ string CCandleModule::GetExhaustionReport(SExhaustionResult &result)
    report += StringFormat("HTF Pattern: %s (%.0f%%)\n", result.htfPattern, result.htfPatternStrength);
    report += StringFormat("LTF Pattern: %s (%.0f%%)\n", result.ltfPattern, result.ltfPatternStrength);
    report += StringFormat("Reset Cooldown: %s\n", result.cooldownReset ? "✅ YES" : "❌ NO");
+   report += StringFormat("Reset Reason: %s\n", result.resetReason);
    report += StringFormat("Candles Waited: %d / %d\n", result.candlesWaited, result.candlesRequired);
    report += StringFormat("Candle Just Closed: %s\n", result.candleJustClosed ? "✅ YES" : "❌ NO");
    report += StringFormat("Waiting for Candle Close: %s\n", result.waitingForCandleClose ? "✅ YES" : "❌ NO");
    report += StringFormat("Checked Candle Time: %s\n", TimeToString(result.checkedCandleTime));
-   if(result.waitingForCandleClose)
+   
+   bool wouldPass = false;
+   if(result.isValid && result.cooldownReset)
    {
-      datetime currentCandleTime = iTime(m_symbol, m_htfTF, 0);
-      datetime currentTime = TimeCurrent();
-      int secondsPerCandle = PeriodSeconds(m_htfTF);
-      int secondsRemaining = (int)((currentCandleTime + secondsPerCandle) - currentTime);
-      report += StringFormat("   Time remaining: %dm %ds\n", secondsRemaining / 60, secondsRemaining % 60);
+      wouldPass = (result.confidence >= m_resetMinConfidence);
+      if(m_resetRequireStrongPattern && wouldPass)
+         wouldPass = IsStrongPatternForReset(result.htfPattern);
    }
+   report += StringFormat("Passes Strict Reset: %s\n", wouldPass ? "✅ YES" : "❌ NO");
+   if(!wouldPass && result.isValid)
+   {
+      if(result.confidence < m_resetMinConfidence)
+         report += StringFormat("   Reason: Confidence %.0f%% < %.0f%%\n", result.confidence, m_resetMinConfidence);
+      else if(m_resetRequireStrongPattern && !IsStrongPatternForReset(result.htfPattern))
+         report += StringFormat("   Reason: Pattern '%s' not strong enough (requires ENGULFING/PIN_BAR)\n", result.htfPattern);
+   }
+   
    report += "═══════════════════════════════════════════\n";
    return report;
 }

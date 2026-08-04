@@ -2,15 +2,16 @@
 //|                      RiskManager.mqh                            |
 //|                    Risk Management Module                        |
 //|                    BRACKET-BASED LOT SIZING                     |
-//|                    Version 2.11                                 |
+//|                    Version 2.12                                 |
 //|                    + COOLDOWN ON LOSS                          |
 //|                    + DAILY TRADE LIMIT (3)                     |
 //|                    + PROFIT THRESHOLDS ($20)                  |
 //|                    + AUTO-CLOSE ALL POSITIONS ON LOSS         |
+//|                    + FULL COOLDOWN LOGGING                    |
 //|                    + ResetCooldown() method added             |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
-#property version "2.11"
+#property version "2.12"
 
 #include "../Headers/Structures.mqh"
 #include "../Headers/Inputs.mqh"
@@ -39,6 +40,7 @@ private:
    datetime m_cooldownEndTime;        // When cooldown ends
    bool     m_inCooldown;             // Currently in cooldown?
    datetime m_lastLossTime;           // When last loss occurred
+   string   m_cooldownReason;         // Reason for cooldown (Loss, Profit, Breakeven)
    
    int      m_dailyTradeCount;        // Trades executed today
    int      m_maxDailyTrades;         // Max trades per day (3)
@@ -61,8 +63,7 @@ private:
    bool   IsCooldownActive();
    bool   IsDayStopped();
    bool   IsDailyLimitReached();
-   void   StartCooldown();
-   void   StartCooldown(int hours);
+   void   StartCooldown(int hours, string reason = "");
    void   StopDay();
    void   CheckAndResetDaily();
    void   CloseAllPositions();
@@ -85,10 +86,12 @@ public:
    bool CanTrade();
    string GetStatusMessage();
    
-   // ═══ NEW: COOLDOWN RESET METHOD ═══
+   // ═══ COOLDOWN MANAGEMENT ═══
    void ResetCooldown();
-   double GetCooldownRemainingSeconds();  // Returns remaining seconds as double
-   string GetCooldownRemaining();          // Returns formatted string (kept for compatibility)
+   double GetCooldownRemainingSeconds();
+   string GetCooldownRemaining();
+   string GetCooldownStatus();          // NEW: Detailed cooldown report
+   void CheckCooldownStatus();          // NEW: Periodic cooldown logging
    
    // Lot sizing - PRIMARY METHOD
    double CalculateLotSize(PrescribedTrade &signal);
@@ -123,6 +126,8 @@ public:
    int    GetMaxDailyTrades() const { return m_maxDailyTrades; }
    bool   IsInCooldown() const { return m_inCooldown; }
    bool   IsDayStoppedFlag() const { return m_dayStopped; }
+   double GetMaxDrawdown() const { return m_maxDrawdown; }
+   string GetCooldownReason() const { return m_cooldownReason; }
 };
 
 //+------------------------------------------------------------------+
@@ -130,7 +135,7 @@ public:
 //+------------------------------------------------------------------+
 CRiskManager::CRiskManager(string symbol)
 {
-   LOG_DEBUG("CRiskManager v2.11 constructor called for " + symbol, g_debugRiskManager);
+   LOG_DEBUG("CRiskManager v2.12 constructor called for " + symbol, g_debugRiskManager);
    
    m_symbol = symbol;
    m_maxDrawdown = InpMaxDrawdown;
@@ -144,8 +149,9 @@ CRiskManager::CRiskManager(string symbol)
    m_cooldownEndTime = 0;
    m_inCooldown = false;
    m_lastLossTime = 0;
+   m_cooldownReason = "";
    m_dailyTradeCount = 0;
-   m_maxDailyTrades = 300;           // Max 3 trades per day
+   m_maxDailyTrades = 3;           // Max 3 trades per day
    m_profitThreshold = 20.0;       // $20 profit threshold
    m_dayStopped = false;
    m_lastResetDate = 0;
@@ -162,7 +168,7 @@ CRiskManager::CRiskManager(string symbol)
    CheckAndResetDaily();
    
    LOG_DEBUG("========================================", g_debugRiskManager || m_debugEnabled);
-   LOG_DEBUG("RISK MANAGER v2.11 - BRACKET LOT SIZING", g_debugRiskManager || m_debugEnabled);
+   LOG_DEBUG("RISK MANAGER v2.12 - BRACKET LOT SIZING", g_debugRiskManager || m_debugEnabled);
    LOG_DEBUG("========================================", g_debugRiskManager || m_debugEnabled);
    LOG_DEBUG("Lot size determined by account balance bracket:", g_debugRiskManager || m_debugEnabled);
    LOG_DEBUG("  $0 - $49       → 0.01 lots", g_debugRiskManager || m_debugEnabled);
@@ -175,6 +181,8 @@ CRiskManager::CRiskManager(string symbol)
    LOG_DEBUG("   Max Daily Trades: " + IntegerToString(m_maxDailyTrades), g_debugRiskManager || m_debugEnabled);
    LOG_DEBUG("   Profit Threshold: $" + DoubleToString(m_profitThreshold, 0), g_debugRiskManager || m_debugEnabled);
    LOG_DEBUG("   Cooldown on Loss: 2 hours", g_debugRiskManager || m_debugEnabled);
+   LOG_DEBUG("   Cooldown on Win: 1 hour", g_debugRiskManager || m_debugEnabled);
+   LOG_DEBUG("   Cooldown on BE: 1 hour", g_debugRiskManager || m_debugEnabled);
    LOG_DEBUG("   Daily Reset: 3:00 AM", g_debugRiskManager || m_debugEnabled);
    LOG_DEBUG("========================================", g_debugRiskManager || m_debugEnabled);
 }
@@ -272,7 +280,7 @@ void CRiskManager::LogBracketInfo(double balance, double lotSize)
 void CRiskManager::CloseAllPositions()
 {
    int closed = 0;
-   LOG_WARNING("🔒 Closing all positions due to loss...");
+   LOG_WARNING("🔒 Closing all positions due to cooldown...");
    
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
@@ -361,9 +369,11 @@ void CRiskManager::CheckAndResetDaily()
       // Clear cooldown if it was active from previous day
       if(m_inCooldown)
       {
+         LOG_INFO("⏰ Daily reset - Cooldown cleared", true);
+         LOG_INFO("   Previous reason: " + m_cooldownReason, true);
          m_inCooldown = false;
          m_cooldownEndTime = 0;
-         LOG_DEBUG("⏰ Daily reset at 3:00 AM - Cooldown cleared", g_debugRiskManager || m_debugEnabled);
+         m_cooldownReason = "";
       }
       
       LOG_DEBUG("⏰ Daily reset at 3:00 AM - Trade count reset to 0", g_debugRiskManager || m_debugEnabled);
@@ -371,7 +381,40 @@ void CRiskManager::CheckAndResetDaily()
 }
 
 //+------------------------------------------------------------------+
-//| IS COOLDOWN ACTIVE?                                             |
+//| START COOLDOWN - WITH REASON LOGGING                            |
+//+------------------------------------------------------------------+
+void CRiskManager::StartCooldown(int hours, string reason = "")
+{
+   if(m_inCooldown) 
+   {
+      LOG_DEBUG("Cooldown already active - ignoring new start request", g_debugRiskManager || m_debugEnabled);
+      return;
+   }
+   
+   if(hours <= 0) hours = 2;  // Default to 2 hours
+   
+   m_cooldownEndTime = TimeCurrent() + (hours * 3600);
+   m_inCooldown = true;
+   m_lastLossTime = TimeCurrent();
+   m_cooldownReason = reason;
+   
+   // ─── LOG COOLDOWN START ───
+   LOG_WARNING("═══════════════════════════════════════════════════════════");
+   LOG_WARNING("⏳⏳⏳ COOLDOWN STARTED ⏳⏳⏳");
+   LOG_WARNING("   Reason: " + reason);
+   LOG_WARNING("   Duration: " + IntegerToString(hours) + " hour(s)");
+   LOG_WARNING("   Started: " + TimeToString(TimeCurrent()));
+   LOG_WARNING("   Ends at: " + TimeToString(m_cooldownEndTime));
+   LOG_WARNING("   Remaining: " + GetCooldownRemaining());
+   LOG_WARNING("   No new trades allowed until cooldown expires");
+   LOG_WARNING("═══════════════════════════════════════════════════════════");
+   
+   // Close all positions
+   CloseAllPositions();
+}
+
+//+------------------------------------------------------------------+
+//| IS COOLDOWN ACTIVE? - WITH LOGGING                              |
 //+------------------------------------------------------------------+
 bool CRiskManager::IsCooldownActive()
 {
@@ -384,41 +427,99 @@ bool CRiskManager::IsCooldownActive()
       // Cooldown has expired
       m_inCooldown = false;
       m_cooldownEndTime = 0;
-      LOG_INFO("✅ Cooldown period ended - Trading resumed", g_debugRiskManager || m_debugEnabled);
+      
+      LOG_INFO("═══════════════════════════════════════════════════════════", true);
+      LOG_INFO("✅✅✅ COOLDOWN EXPIRED ✅✅✅", true);
+      LOG_INFO("   Reason: " + m_cooldownReason, true);
+      LOG_INFO("   Ended at: " + TimeToString(currentTime), true);
+      LOG_INFO("   Trading resumed", true);
+      LOG_INFO("═══════════════════════════════════════════════════════════", true);
+      
+      m_cooldownReason = "";
       return false;
    }
    
    return true;
 }
 
-// Replace the StartCooldown method
-void CRiskManager::StartCooldown(int hours)
+//+------------------------------------------------------------------+
+//| CHECK COOLDOWN STATUS - PERIODIC LOGGING                        |
+//+------------------------------------------------------------------+
+void CRiskManager::CheckCooldownStatus()
 {
-   if(m_inCooldown) return;
+   if(!m_inCooldown) 
+   {
+      if(m_debugEnabled)
+         LOG_DEBUG("📊 Cooldown: NOT ACTIVE", g_debugRiskManager || m_debugEnabled);
+      return;
+   }
    
-   if(hours <= 0) hours = 2;  // Default to 2 hours
+   datetime currentTime = TimeCurrent();
+   int remaining = (int)(m_cooldownEndTime - currentTime);
    
-   m_cooldownEndTime = TimeCurrent() + (hours * 3600);
-   m_inCooldown = true;
-   m_lastLossTime = TimeCurrent();
+   if(remaining <= 0)
+   {
+      // Cooldown expired (will be cleared by IsCooldownActive next call)
+      return;
+   }
    
-   LOG_WARNING("⏳⏳⏳ COOLDOWN STARTED - " + IntegerToString(hours) + " hours");
-   LOG_WARNING("   No new trades allowed until " + TimeToString(m_cooldownEndTime));
-   
-   // Close all positions
-   CloseAllPositions();
+   // Log cooldown progress at intervals
+   static datetime lastCooldownLog = 0;
+   if(currentTime - lastCooldownLog >= 60) // Log every minute
+   {
+      lastCooldownLog = currentTime;
+      
+      int hours = remaining / 3600;
+      int minutes = (remaining % 3600) / 60;
+      int seconds = remaining % 60;
+      
+      LOG_DEBUG("⏳ COOLDOWN ACTIVE", g_debugRiskManager || m_debugEnabled);
+      LOG_DEBUG("   Reason: " + m_cooldownReason, g_debugRiskManager || m_debugEnabled);
+      LOG_DEBUG("   Remaining: " + StringFormat("%02d:%02d:%02d", hours, minutes, seconds), 
+                g_debugRiskManager || m_debugEnabled);
+      LOG_DEBUG("   Ends at: " + TimeToString(m_cooldownEndTime), 
+                g_debugRiskManager || m_debugEnabled);
+   }
 }
 
 //+------------------------------------------------------------------+
-//| ═══ NEW: RESET COOLDOWN ═══                                   |
+//| GET COOLDOWN STATUS - DETAILED REPORT                           |
+//+------------------------------------------------------------------+
+string CRiskManager::GetCooldownStatus()
+{
+   if(!m_inCooldown) return "No cooldown active";
+   
+   datetime currentTime = TimeCurrent();
+   int remaining = (int)(m_cooldownEndTime - currentTime);
+   
+   if(remaining <= 0) return "Cooldown expired (will be cleared next check)";
+   
+   int hours = remaining / 3600;
+   int minutes = (remaining % 3600) / 60;
+   int seconds = remaining % 60;
+   
+   return StringFormat("Reason: %s | Remaining: %02d:%02d:%02d | Ends: %s",
+                       m_cooldownReason,
+                       hours, minutes, seconds,
+                       TimeToString(m_cooldownEndTime));
+}
+
+//+------------------------------------------------------------------+
+//| RESET COOLDOWN                                                   |
 //+------------------------------------------------------------------+
 void CRiskManager::ResetCooldown()
 {
    if(m_inCooldown)
    {
+      LOG_INFO("═══════════════════════════════════════════════════════════", true);
+      LOG_INFO("🔄 COOLDOWN MANUALLY RESET", true);
+      LOG_INFO("   Reason: " + m_cooldownReason, true);
+      LOG_INFO("   Trading resumed immediately", true);
+      LOG_INFO("═══════════════════════════════════════════════════════════", true);
+      
       m_inCooldown = false;
       m_cooldownEndTime = 0;
-      LOG_INFO("✅ Cooldown manually reset - Trading resumed", g_debugRiskManager || m_debugEnabled);
+      m_cooldownReason = "";
    }
    else
    {
@@ -427,7 +528,7 @@ void CRiskManager::ResetCooldown()
 }
 
 //+------------------------------------------------------------------+
-//| ═══ NEW: GET COOLDOWN REMAINING IN SECONDS ═══                |
+//| GET COOLDOWN REMAINING IN SECONDS                               |
 //+------------------------------------------------------------------+
 double CRiskManager::GetCooldownRemainingSeconds()
 {
@@ -528,6 +629,9 @@ bool CRiskManager::CanTrade()
    return true;
 }
 
+//+------------------------------------------------------------------+
+//| ON TRADE CLOSED - WITH REASON LOGGING                           |
+//+------------------------------------------------------------------+
 void CRiskManager::OnTradeClosed(double profit)
 {
    LOG_INFO("📊 Trade closed with profit: $" + DoubleToString(profit, 2), 
@@ -541,15 +645,16 @@ void CRiskManager::OnTradeClosed(double profit)
                 "/" + IntegerToString(m_maxDailyTrades), g_debugRiskManager || m_debugEnabled);
    }
    
-   // ═══ FIX: ALWAYS START COOLDOWN AFTER ANY TRADE ═══
+   // ═══ ALWAYS START COOLDOWN AFTER ANY TRADE ═══
    
    // Step 2: LOSS - 2 hour cooldown
    if(profit < 0)
    {
+      string reason = "LOSS - $" + DoubleToString(profit, 2);
       LOG_WARNING("⚠️ LOSS detected: $" + DoubleToString(profit, 2));
       
-      // Start cooldown (this also closes all positions)
-      StartCooldown(InpCooldownLoss);
+      // Start cooldown with reason
+      StartCooldown(InpCooldownLoss, reason);
       
       // Check if drawdown is exceeded
       if(GetCurrentDrawdown() >= m_maxDrawdown)
@@ -565,12 +670,13 @@ void CRiskManager::OnTradeClosed(double profit)
    // Step 3: BIG PROFIT >= $20 - 1 hour cooldown
    if(profit >= m_profitThreshold)
    {
+      string reason = "BIG PROFIT - $" + DoubleToString(profit, 2);
       LOG_INFO("💰💰💰 BIG PROFIT: $" + DoubleToString(profit, 2) + 
                " (>= $" + DoubleToString(m_profitThreshold, 0) + ")", 
                g_debugRiskManager || m_debugEnabled);
       
-      // Start cooldown for big win
-      StartCooldown(InpCooldownWin);
+      // Start cooldown with reason
+      StartCooldown(InpCooldownWin, reason);
       
       // Decrement daily count since big profit doesn't count
       if(m_dailyTradeCount > 0)
@@ -589,19 +695,21 @@ void CRiskManager::OnTradeClosed(double profit)
    // Step 4: SMALL PROFIT (0 < profit < $20) - 1 hour cooldown
    if(profit > 0 && profit < m_profitThreshold)
    {
+      string reason = "SMALL PROFIT - $" + DoubleToString(profit, 2);
       LOG_DEBUG("✅ Small profit: $" + DoubleToString(profit, 2) + 
                 " (< $" + DoubleToString(m_profitThreshold, 0) + ")", 
                 g_debugRiskManager || m_debugEnabled);
       
-      // Start cooldown for small win
-      StartCooldown(InpCooldownWin);
+      // Start cooldown with reason
+      StartCooldown(InpCooldownWin, reason);
    }
    
    // Step 5: BREAKEVEN (profit == 0) - 1 hour cooldown
    if(profit == 0)
    {
+      string reason = "BREAKEVEN - $0.00";
       LOG_DEBUG("⚖️ Breakeven trade", g_debugRiskManager || m_debugEnabled);
-      StartCooldown(InpCooldownBE);
+      StartCooldown(InpCooldownBE, reason);
    }
    
    // Step 6: Check if daily limit reached after this trade
@@ -635,7 +743,7 @@ string CRiskManager::GetStatusMessage()
    }
    else if(IsCooldownActive())
    {
-      status = "⏳ COOLDOWN - " + GetCooldownRemaining();
+      status = "⏳ COOLDOWN - " + GetCooldownRemaining() + " | " + m_cooldownReason;
    }
    else if(m_dailyTradeCount >= m_maxDailyTrades)
    {

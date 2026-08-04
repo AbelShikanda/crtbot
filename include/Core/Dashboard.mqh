@@ -1,15 +1,11 @@
 //+------------------------------------------------------------------+
 //|                        Dashboard.mqh                            |
 //|                    Dashboard Display Module                      |
-//|                    v4.0 - 8 STEP PROGRESS BAR                  |
-//|                    REMOVED: Pullback, RR Check                 |
-//|                    ADDED: Priority, Direction, Strength,        |
-//|                          Exhaustion, Alignment                  |
-//|                    FONTS: +1 point size increase               |
-//|                    SPACING: Added below checks                 |
+//|                    v4.1 - DETAILED RISK STATUS                  |
+//|                    SHOWS EXACT BLOCKING REASON                  |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
-#property version "4.0"
+#property version "4.1"
 
 // ============================================================
 // INCLUDES
@@ -86,6 +82,9 @@ private:
    int GetStatusColor(bool passed);
    string PadRight(string text, int width);
    
+   // ═══ NEW: DETAILED RISK STATUS ═══
+   string GetDetailedRiskStatus();
+   
    // ═══ COLOR HELPERS ═══
    int GetComponentColor(string direction);
    int GetScenarioColor(ENUM_MARKET_SCENARIO scenario);
@@ -136,7 +135,7 @@ public:
 //+------------------------------------------------------------------+
 CDashboard::CDashboard(string symbol)
 {
-   LOG_DEBUG("Dashboard v4.0 Constructor called", g_dashboardDebugMode);
+   LOG_DEBUG("Dashboard v4.1 Constructor called", g_dashboardDebugMode);
    
    m_symbol = (symbol == NULL) ? _Symbol : symbol;
    m_prefix = "DASH_" + m_symbol + "_";
@@ -150,8 +149,8 @@ CDashboard::CDashboard(string symbol)
    
    m_startX = 8;
    m_startY = 35;
-   m_lineHeight = 16;  // Increased from 14 for larger fonts
-   m_dashWidth = 540;  // Slightly wider for larger text
+   m_lineHeight = 16;
+   m_dashWidth = 540;
    
    m_currentStep = 0;
    m_allChecksPassed = false;
@@ -161,10 +160,7 @@ CDashboard::CDashboard(string symbol)
    
    InitializeProgress();
    
-   LOG_DEBUG("Dashboard v4.0 created - Symbol: " + m_symbol, g_dashboardDebugMode);
-   LOG_DEBUG("   Steps: 8 (Risk, Priority, Direction, Strength, Exhaustion, Confidence, Alignment, Execution)", g_dashboardDebugMode);
-   LOG_DEBUG("   REMOVED: Pullback, RR Check (handled by PositionManager)", g_dashboardDebugMode);
-   LOG_DEBUG("   Fonts: +1 point size | Line Height: " + IntegerToString(m_lineHeight), g_dashboardDebugMode);
+   LOG_DEBUG("Dashboard v4.1 created - Shows detailed risk blocking reasons", g_dashboardDebugMode);
 }
 
 //+------------------------------------------------------------------+
@@ -181,7 +177,6 @@ CDashboard::~CDashboard()
 //+------------------------------------------------------------------+
 void CDashboard::InitializeProgress()
 {
-   // ═══ 8 STEPS: Risk → Priority → Direction → Strength → Exhaustion → Confidence → Alignment → Execution ═══
    string stepNames[8] = {
       "Risk Manager",      // Step 1: Cooldown, daily limits
       "Priority",          // Step 2: Crossover Priority 1-3
@@ -208,6 +203,55 @@ void CDashboard::InitializeProgress()
    m_allChecksPassed = false;
    m_overallStatus = "⏳ WAITING FOR SIGNAL...";
    m_overallColorCode = clrYellow;
+}
+
+//+------------------------------------------------------------------+
+//| GET DETAILED RISK STATUS - SHOWS EXACT BLOCKING REASON         |
+//+------------------------------------------------------------------+
+string CDashboard::GetDetailedRiskStatus()
+{
+   if(m_riskManager == NULL) 
+      return "⚠️ Risk Manager: NOT INITIALIZED";
+   
+   // --- Check 1: Day Stopped ---
+   if(m_riskManager.IsDayStoppedFlag())
+   {
+      if(m_riskManager.GetDailyTradeCount() >= m_riskManager.GetMaxDailyTrades())
+         return "🛑 DAY STOPPED - Daily limit: " + IntegerToString(m_riskManager.GetDailyTradeCount()) + "/" + IntegerToString(m_riskManager.GetMaxDailyTrades());
+      else
+         return "🛑 DAY STOPPED - Big profit/Manual stop";
+   }
+   
+   // --- Check 2: Cooldown ---
+   if(m_riskManager.IsInCooldown())
+   {
+      string remaining = m_riskManager.GetCooldownRemaining();
+      return "⏳ COOLDOWN - " + remaining;
+   }
+   
+   // --- Check 3: Daily Limit ---
+   if(m_riskManager.GetDailyTradeCount() >= m_riskManager.GetMaxDailyTrades())
+   {
+      return "📊 DAILY LIMIT - " + IntegerToString(m_riskManager.GetDailyTradeCount()) + "/" + IntegerToString(m_riskManager.GetMaxDailyTrades());
+   }
+   
+   // --- Check 4: Max Drawdown ---
+   double drawdown = m_riskManager.GetCurrentDrawdown();
+   double maxDrawdown = m_riskManager.GetMaxDrawdown();
+   if(drawdown >= maxDrawdown)
+   {
+      return "⚠️ MAX DRAWDOWN - " + DoubleToString(drawdown, 1) + "% ≥ " + DoubleToString(maxDrawdown, 1) + "%";
+   }
+   
+   // --- Check 5: Max Positions ---
+   int positions = PositionsTotal();
+   if(positions >= InpMaxPositions)
+   {
+      return "📊 MAX POSITIONS - " + IntegerToString(positions) + "/" + IntegerToString(InpMaxPositions);
+   }
+   
+   // --- All checks passed ---
+   return "✅ READY - " + IntegerToString(m_riskManager.GetDailyTradeCount()) + "/" + IntegerToString(m_riskManager.GetMaxDailyTrades()) + " today";
 }
 
 //+------------------------------------------------------------------+
@@ -334,7 +378,7 @@ int CDashboard::GetProgressPercent()
    {
       if(m_progress[i].passed) passedCount++;
    }
-   return (passedCount * 100) / 8;  // 8 steps
+   return (passedCount * 100) / 8;
 }
 
 //+------------------------------------------------------------------+
@@ -416,7 +460,7 @@ string CDashboard::PadRight(string text, int width)
 }
 
 //+------------------------------------------------------------------+
-//| Create Label - All fonts +1 point size                         |
+//| Create Label                                                    |
 //+------------------------------------------------------------------+
 void CDashboard::CreateLabel(string name, string text, int x, int y, int clr, int fontSize, bool bold)
 {
@@ -470,7 +514,6 @@ void CDashboard::ShowNoRange()
    int y = m_startY;
    int x = m_startX;
    
-   // Fonts: +1 point size
    CreateLabel(m_prefix + "TopLeft", "┌", x, y, clrGray, 9, false);
    CreateLabel(m_prefix + "TopLine", "──────────────────────────────────────────────────────", x + 8, y, clrGray, 9, false);
    CreateLabel(m_prefix + "TopRight", "┐", x + 248, y, clrGray, 9, false);
@@ -489,13 +532,13 @@ void CDashboard::ShowNoRange()
 }
 
 //+------------------------------------------------------------------+
-//| Draw Progress Checks - 8 Steps                                 |
+//| Draw Progress Checks - WITH DETAILED RISK STATUS               |
 //+------------------------------------------------------------------+
 void CDashboard::DrawProgressChecks(int x, int y)
 {
    int checkY = y;
    int indent = 4;
-   int barWidth = 55;  // Slightly wider for larger font
+   int barWidth = 55;
    int percent = GetProgressPercent();
    
    // ─── PROGRESS BAR ───
@@ -523,21 +566,22 @@ void CDashboard::DrawProgressChecks(int x, int y)
    if(m_tradeExecuted)
       progressColor = clrLimeGreen;
    
-   // Font: 8 (was 7)
    CreateLabel(m_prefix + "ProgressBar", progressBar, x + indent, checkY, progressColor, 8, false);
    checkY += m_lineHeight - 2;
    
-   // ─── CHECK LIST - SHOW ONLY CURRENT CHECK ───
+   // ─── CHECK LIST - SHOW CURRENT CHECK WITH DETAILED STATUS ───
    if(m_currentStep == 0 && !m_tradeExecuted)
    {
-      string waitingText = "Check 0/8: ⏳ No signal detected - waiting for market conditions";
+      string riskStatus = GetDetailedRiskStatus();
+      string waitingText = "⏳ " + riskStatus;
+      if(StringLen(waitingText) > 58) waitingText = StringSubstr(waitingText, 0, 58) + "...";
       CreateLabel(m_prefix + "Check0", waitingText, x + indent, checkY, clrYellow, 8, false);
       return;
    }
    
    if(m_tradeExecuted)
    {
-      string execText = "Check 8/8: ✅ Execution: SUCCESSFUL - Trade executed";
+      string execText = "✅ EXECUTED - Position OPEN";
       CreateLabel(m_prefix + "CheckExec", execText, x + indent, checkY, clrLimeGreen, 8, false);
       return;
    }
@@ -549,19 +593,39 @@ void CDashboard::DrawProgressChecks(int x, int y)
       string checkText = "";
       int checkColor = m_progress[currentIdx].colorCode;
       
-      if(m_progress[currentIdx].passed)
+      // ─── STEP 1: RISK MANAGER - SHOW DETAILED REASON ───
+      if(currentIdx == 0)
       {
-         checkText = "Check " + IntegerToString(m_currentStep) + "/8: ✅ " + m_progress[currentIdx].name + " - " + m_progress[currentIdx].message;
+         string riskStatus = GetDetailedRiskStatus();
+         if(m_progress[currentIdx].passed)
+         {
+            checkText = "✅ " + riskStatus;
+            checkColor = clrLimeGreen;
+         }
+         else if(m_progress[currentIdx].isActive)
+         {
+            checkText = "⏳ " + riskStatus;
+            checkColor = clrYellow;
+         }
+         else
+         {
+            checkText = "❌ " + riskStatus;
+            checkColor = clrRed;
+         }
+      }
+      else if(m_progress[currentIdx].passed)
+      {
+         checkText = "✅ Step " + IntegerToString(m_currentStep) + "/8: " + m_progress[currentIdx].name + " - " + m_progress[currentIdx].message;
          checkColor = clrLimeGreen;
       }
       else if(m_progress[currentIdx].isActive)
       {
-         checkText = "Check " + IntegerToString(m_currentStep) + "/8: ⏳ " + m_progress[currentIdx].name + " - " + m_progress[currentIdx].message;
+         checkText = "⏳ Step " + IntegerToString(m_currentStep) + "/8: " + m_progress[currentIdx].name + " - " + m_progress[currentIdx].message;
          checkColor = clrYellow;
       }
       else
       {
-         checkText = "Check " + IntegerToString(m_currentStep) + "/8: ⏳ " + m_progress[currentIdx].name + " - " + m_progress[currentIdx].message;
+         checkText = "⏳ Step " + IntegerToString(m_currentStep) + "/8: " + m_progress[currentIdx].name + " - " + m_progress[currentIdx].message;
          checkColor = clrYellow;
       }
       
@@ -573,7 +637,7 @@ void CDashboard::DrawProgressChecks(int x, int y)
 }
 
 //+------------------------------------------------------------------+
-//| UPDATE DASHBOARD - WITH 8 STEP PROGRESS                        |
+//| UPDATE DASHBOARD - WITH DETAILED RISK STATUS                   |
 //+------------------------------------------------------------------+
 void CDashboard::Update(
    RangeData &range,
@@ -584,7 +648,7 @@ void CDashboard::Update(
    SMarketAnalysis &analysis
 )
 {
-   LOG_DEBUG("=== DASHBOARD UPDATE (v4.0) ===", g_dashboardDebugMode);
+   LOG_DEBUG("=== DASHBOARD UPDATE (v4.1) ===", g_dashboardDebugMode);
    
    ClearDashboard();
    
@@ -609,10 +673,9 @@ void CDashboard::Update(
    int y = m_startY;
    int x = m_startX;
    
-   // All fonts increased by +1 point size
-   int fs = 9;        // was 8
-   int fsSmall = 8;   // was 7
-   int fsTitle = 10;  // was 9
+   int fs = 9;
+   int fsSmall = 8;
+   int fsTitle = 10;
    
    // Top border
    CreateLabel(m_prefix + "TopLeft", "┌", x, y, clrGray, 9, false);
@@ -620,8 +683,11 @@ void CDashboard::Update(
    CreateLabel(m_prefix + "TopRight", "┐", x + 248, y, clrGray, 9, false);
    y += m_lineHeight;
    
-   // Title
-   CreateLabel(m_prefix + "Title", "│ ◆ PULLBACK DASHBOARD v4.0 ◆ " + m_symbol, x, y, clrWhite, fsTitle, true);
+   // Title with Risk Status
+   string riskStatus = GetDetailedRiskStatus();
+   string titleText = "│ ◆ PULLBACK v4.1 ◆ " + m_symbol + " | " + riskStatus;
+   if(StringLen(titleText) > 55) titleText = StringSubstr(titleText, 0, 55);
+   CreateLabel(m_prefix + "Title", titleText, x, y, clrWhite, fsTitle, true);
    y += m_lineHeight;
    
    CreateLabel(m_prefix + "Sep1", "├──────────────────────────────────────────────────────┤", x, y, clrGray, 9, false);
@@ -731,13 +797,13 @@ void CDashboard::Update(
    y += m_lineHeight;
    
    DrawProgressChecks(x, y);
-   y += 6;  // ⬅️ ADDED: Extra spacing below checks
+   y += 6;
    
    CreateLabel(m_prefix + "Sep4", "├──────────────────────────────────────────────────────┤", x, y, clrGray, 9, false);
    y += m_lineHeight + 1;
    
    // TRADE SECTION
-   CreateLabel(m_prefix + "TradeHeader", "│ TRADE:", x, y, clrWhite, fs, true);
+   // CreateLabel(m_prefix + "TradeHeader", "│ TRADE:", x, y, clrWhite, fs, true);
    y += m_lineHeight;
    
    if(trade.signal != 0)
@@ -762,7 +828,6 @@ void CDashboard::Update(
       
       string profitText = isOpenPosition ? StringFormat("%.1f pips", profitPips) : "0.0 pips";
       
-      // Show SL/TP if available
       string slText = "SL: " + (trade.stopLoss > 0 ? DoubleToString(trade.stopLoss, _Digits) : "N/A");
       string tpText = "TP: " + (trade.takeProfit > 0 ? DoubleToString(trade.takeProfit, _Digits) : "N/A");
       
@@ -784,6 +849,5 @@ void CDashboard::Update(
    
    CreateLabel(m_prefix + "BottomLine", "└──────────────────────────────────────────────────────┘", x, y, clrGray, 9, false);
    
-   LOG_DEBUG("✅ Dashboard update complete (v4.0 - 8 STEPS)", g_dashboardDebugMode);
-   LOG_DEBUG("   Steps: Risk, Priority, Direction, Strength, Exhaustion, Confidence, Alignment, Execution", g_dashboardDebugMode);
+   LOG_DEBUG("✅ Dashboard update complete (v4.1 - Shows detailed risk blocking reasons)", g_dashboardDebugMode);
 }

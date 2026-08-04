@@ -51,7 +51,7 @@ input int      InpMaxSlippage       = 10;
 //| BREAKEVEN SETTINGS                                              |
 //+------------------------------------------------------------------+
 input bool   InpUseBreakeven        = true;        // Use Breakeven Stop
-input int    InpBreakevenPips       = 250;         // Breakeven after X pips
+input int    InpBreakevenPips       = 500;         // Breakeven after X pips
 input int    InpBreakevenBuffer     = 100;        // Breakeven buffer in pips
 input int    InpSLBufferPoints      = 30;   // SL Buffer in points
 
@@ -97,7 +97,7 @@ input bool     InpCooldownEnable = true;     // Enable cooldown system
 //| Input Parameters - Trend Filter                                  
 // ============================================================
 input group "=== TREND FILTER (H1+) ==="
-input ENUM_TIMEFRAMES InpTrendTF = PERIOD_H1;      // Trend Timeframe
+input ENUM_TIMEFRAMES InpTrendTF = PERIOD_M15;      // Trend Timeframe
 input double InpMinTrendStrength = 40.0;            // Minimum Trend Strength (%)
 input bool InpRequireStrongTrend = false;           // Require Strong Trend (60%+)
 input bool InpAllowNeutralTrend = false;            // Allow trades in neutral trend

@@ -64,7 +64,7 @@ bool g_debugComponent = false;
 bool g_debugPullback = false;
 bool g_debugSession = false;
 bool g_debugOrderBlock = false;
-bool g_debugCandle = false;
+bool g_debugCandle = true;
 
 // ============================================================
 // GLOBAL VARIABLES
@@ -344,6 +344,17 @@ int OnInit()
          g_dashboard.SetTrendManager(g_trendManager);
          g_dashboard.SetComponentManager(g_componentManager);
          g_dashboard.SetMinConfidenceThreshold(InpNeutralThreshold);
+         
+         // ─── CONNECT RISK MANAGER TO DASHBOARD ───
+         if(g_riskManager != NULL)
+         {
+            g_dashboard.SetRiskManager(g_riskManager);
+            LOG_INFO("✅ Dashboard → RiskManager connected", g_debugMain);
+         }
+         else
+         {
+            LOG_WARNING("⚠️ RiskManager is NULL - Dashboard will show 'Not Initialized'");
+         }
       }
    }
    
@@ -907,10 +918,9 @@ string GetStateName(ENUM_CROSS_STATE state)
 }
 
 //+------------------------------------------------------------------+
-//| CheckSignal - v4.0 SIMPLIFIED FLOW (8 Checks)                  |
-//| Uses PositionManager for self-contained SL/TP                  |
-//| REMOVED: Pullback, RR Check, TP Calculation                    |
-//| CHECKS: 11 → 8 (27% reduction)                                |
+//| CheckSignal - v4.1 WITH MA89 PULLBACK CHECK                     |
+//| Uses TrendManager for pullback validation before CandleModule   |
+//| CHECKS: 8 → 9 (Added Pullback near MA89)                      |
 //+------------------------------------------------------------------+
 void CheckSignal()
 {
@@ -921,13 +931,13 @@ void CheckSignal()
    }
    
    LOG_DEBUG("═══════════════════════════════════════════════════════════", g_debugMain);
-   LOG_DEBUG("🔍 CHECK SIGNAL v4.0 - 8 CHECKS", g_debugMain);
+   LOG_DEBUG("🔍 CHECK SIGNAL v4.1 - 9 CHECKS (with MA89 Pullback)", g_debugMain);
    LOG_DEBUG("═══════════════════════════════════════════════════════════", g_debugMain);
    
    // ═══════════════════════════════════════════════════════════════
    // ═══ CHECK 1: RISK MANAGER ═══
    // ═══════════════════════════════════════════════════════════════
-   LOG_DEBUG("📌 CHECK 1/8: Risk Manager", g_debugMain);
+   LOG_DEBUG("📌 CHECK 1/9: Risk Manager", g_debugMain);
    
    if(g_riskManager != NULL && !g_riskManager.CanTrade())
    {
@@ -941,7 +951,7 @@ void CheckSignal()
    // ═══════════════════════════════════════════════════════════════
    // ═══ CHECKS 2-4: TREND MANAGER ═══
    // ═══════════════════════════════════════════════════════════════
-   LOG_DEBUG("📌 CHECK 2-4/8: Trend Manager", g_debugMain);
+   LOG_DEBUG("📌 CHECK 2-4/9: Trend Manager", g_debugMain);
    
    if(g_dashboard != NULL)
       g_dashboard.SetCheckPending(1, "Analyzing trend...");
@@ -1006,12 +1016,63 @@ void CheckSignal()
    UpdateDashboard();
    
    // ═══════════════════════════════════════════════════════════════
-   // ═══ CHECK 5: CANDLE MODULE - EXHAUSTION ═══
+   // ═══ CHECK 4.5: PULLBACK NEAR MA89 (NEW - Using TrendManager) ═══
    // ═══════════════════════════════════════════════════════════════
-   LOG_DEBUG("📌 CHECK 5/8: Candle Module - Exhaustion", g_debugMain);
+   LOG_DEBUG("📌 CHECK 4.5/9: Pullback near M5 MA89", g_debugMain);
    
    if(g_dashboard != NULL)
-      g_dashboard.SetCheckPending(2, "Checking exhaustion...");
+      g_dashboard.SetCheckPending(2, "Checking pullback near MA89...");
+   UpdateDashboard();
+   
+   double pullbackPercent = 0;
+   bool hasValidPullback = g_trendManager.CheckPullbackNearMA89(pullbackPercent, 30.0, 300);
+   
+   if(!hasValidPullback)
+   {
+      LOG_DEBUG("❌ No valid pullback near M5 MA89", g_debugMain);
+      LOG_DEBUG("   Pullback: " + DoubleToString(pullbackPercent, 1) + "% (min 30%)", g_debugMain);
+      
+      // Log MA89 details for debugging
+      double ma89_M5 = g_trendManager.GetMA89_Entry();
+      double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      double distancePips = 0;
+      if(ma89_M5 > 0)
+         distancePips = MathAbs(currentPrice - ma89_M5) / SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+      
+      LOG_DEBUG("   M5 MA89: " + DoubleToString(ma89_M5, _Digits), g_debugMain);
+      LOG_DEBUG("   Current: " + DoubleToString(currentPrice, _Digits), g_debugMain);
+      LOG_DEBUG("   Distance: " + DoubleToString(distancePips, 0) + " pips (max 300)", g_debugMain);
+      
+      if(g_dashboard != NULL)
+         g_dashboard.SetCheckFailed(2, "No pullback near MA89");
+      return;
+   }
+   
+   LOG_DEBUG("✅ Pullback near M5 MA89: " + DoubleToString(pullbackPercent, 1) + "%", g_debugMain);
+   
+   // ─── LOG MA89 DETAILS ───
+   double ma89_M5 = g_trendManager.GetMA89_Entry();
+   double currentPrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double distancePips = 0;
+   if(ma89_M5 > 0)
+      distancePips = MathAbs(currentPrice - ma89_M5) / SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   
+   LOG_DEBUG("   M5 MA89: " + DoubleToString(ma89_M5, _Digits), g_debugMain);
+   LOG_DEBUG("   Current: " + DoubleToString(currentPrice, _Digits), g_debugMain);
+   LOG_DEBUG("   Distance: " + DoubleToString(distancePips, 0) + " pips", g_debugMain);
+   LOG_DEBUG("   Pullback: " + DoubleToString(pullbackPercent, 1) + "%", g_debugMain);
+   
+   if(g_dashboard != NULL)
+      g_dashboard.SetCheckPassed(2, "Pullback: " + DoubleToString(pullbackPercent, 0) + "% near MA89");
+   UpdateDashboard();
+   
+   // ═══════════════════════════════════════════════════════════════
+   // ═══ CHECK 5: CANDLE MODULE - EXHAUSTION ═══
+   // ═══════════════════════════════════════════════════════════════
+   LOG_DEBUG("📌 CHECK 5/9: Candle Module - Exhaustion", g_debugMain);
+   
+   if(g_dashboard != NULL)
+      g_dashboard.SetCheckPending(3, "Checking exhaustion...");
    UpdateDashboard();
    
    int trendDirection = 0;
@@ -1036,7 +1097,7 @@ void CheckSignal()
    {
       LOG_DEBUG("❌ No exhaustion: " + exhaustion.description, g_debugMain);
       if(g_dashboard != NULL)
-         g_dashboard.SetCheckFailed(2, "No exhaustion");
+         g_dashboard.SetCheckFailed(3, "No exhaustion");
       return;
    }
    LOG_DEBUG("✅ Exhaustion detected", g_debugMain);
@@ -1045,7 +1106,7 @@ void CheckSignal()
    {
       LOG_DEBUG("❌ Confidence too low: " + DoubleToString(exhaustion.confidence, 1) + "% < 50%", g_debugMain);
       if(g_dashboard != NULL)
-         g_dashboard.SetCheckFailed(2, "Confidence too low");
+         g_dashboard.SetCheckFailed(3, "Confidence too low");
       return;
    }
    LOG_DEBUG("✅ Exhaustion confidence: " + DoubleToString(exhaustion.confidence, 1) + "%", g_debugMain);
@@ -1055,16 +1116,16 @@ void CheckSignal()
                       DoubleToString(exhaustion.confidence, 0) + "%)";
    LOG_DEBUG("✅ CANDLE MODULE PASSED: " + candleMsg, g_debugMain);
    if(g_dashboard != NULL)
-      g_dashboard.SetCheckPassed(2, candleMsg);
+      g_dashboard.SetCheckPassed(3, candleMsg);
    UpdateDashboard();
    
    // ═══════════════════════════════════════════════════════════════
    // ═══ CHECKS 6-7: CONFIDENCE + ALIGNMENT ═══
    // ═══════════════════════════════════════════════════════════════
-   LOG_DEBUG("📌 CHECK 6-7/8: Confidence + Alignment", g_debugMain);
+   LOG_DEBUG("📌 CHECK 6-7/9: Confidence + Alignment", g_debugMain);
    
    if(g_dashboard != NULL)
-      g_dashboard.SetCheckPending(3, "Checking confidence...");
+      g_dashboard.SetCheckPending(4, "Checking confidence...");
    UpdateDashboard();
    
    SMarketAnalysis analysis = g_componentManager.AnalyzeMarket();
@@ -1096,7 +1157,7 @@ void CheckSignal()
    {
       LOG_DEBUG("❌ NEUTRAL sentiment - no clear direction", g_debugMain);
       if(g_dashboard != NULL)
-         g_dashboard.SetCheckFailed(3, "NEUTRAL sentiment");
+         g_dashboard.SetCheckFailed(4, "NEUTRAL sentiment");
       return;
    }
    
@@ -1105,7 +1166,7 @@ void CheckSignal()
       LOG_DEBUG("❌ Confidence too low: " + DoubleToString(analysis.overallConfidence, 1) + "% < " + 
                 DoubleToString(thresholdToUse, 1) + "%", g_debugMain);
       if(g_dashboard != NULL)
-         g_dashboard.SetCheckFailed(3, "Confidence too low");
+         g_dashboard.SetCheckFailed(4, "Confidence too low");
       return;
    }
    LOG_DEBUG("✅ Confidence passed", g_debugMain);
@@ -1126,7 +1187,7 @@ void CheckSignal()
    {
       LOG_DEBUG("❌ Signal does not align with trend", g_debugMain);
       if(g_dashboard != NULL)
-         g_dashboard.SetCheckFailed(3, "Signal doesn't align");
+         g_dashboard.SetCheckFailed(4, "Signal doesn't align");
       return;
    }
    
@@ -1135,23 +1196,23 @@ void CheckSignal()
                         DoubleToString(thresholdToUse, 1) + "%";
    LOG_DEBUG("✅ CONFIDENCE PASSED: " + confMessage, g_debugMain);
    if(g_dashboard != NULL)
-      g_dashboard.SetCheckPassed(3, confMessage);
+      g_dashboard.SetCheckPassed(4, confMessage);
    UpdateDashboard();
    
    // ═══════════════════════════════════════════════════════════════
    // ═══ CHECK 8: RISK LIMITS ═══
    // ═══════════════════════════════════════════════════════════════
-   LOG_DEBUG("📌 CHECK 8/8: Risk Limits", g_debugMain);
+   LOG_DEBUG("📌 CHECK 8/9: Risk Limits", g_debugMain);
    
    if(g_dashboard != NULL)
-      g_dashboard.SetCheckPending(4, "Checking risk limits...");
+      g_dashboard.SetCheckPending(5, "Checking risk limits...");
    UpdateDashboard();
    
    if(g_riskManager != NULL && !g_riskManager.CheckRiskLimits())
    {
       LOG_DEBUG("❌ Risk: " + g_riskManager.GetStatusMessage(), g_debugMain);
       if(g_dashboard != NULL)
-         g_dashboard.SetCheckFailed(4, "Risk: " + g_riskManager.GetStatusMessage());
+         g_dashboard.SetCheckFailed(5, "Risk: " + g_riskManager.GetStatusMessage());
       return;
    }
    
@@ -1160,23 +1221,23 @@ void CheckSignal()
    {
       LOG_DEBUG("✅ Risk: " + g_riskManager.GetStatusMessage(), g_debugMain);
       if(g_dashboard != NULL)
-         g_dashboard.SetCheckPassed(4, "Risk: " + g_riskManager.GetStatusMessage());
+         g_dashboard.SetCheckPassed(5, "Risk: " + g_riskManager.GetStatusMessage());
    }
    else
    {
       LOG_DEBUG("✅ Risk: Ready", g_debugMain);
       if(g_dashboard != NULL)
-         g_dashboard.SetCheckPassed(4, "Risk: Ready");
+         g_dashboard.SetCheckPassed(5, "Risk: Ready");
    }
    UpdateDashboard();
    
    // ═══════════════════════════════════════════════════════════════
    // ═══ EXECUTION ═══
    // ═══════════════════════════════════════════════════════════════
-   LOG_DEBUG("📌 EXECUTION - All 8 checks passed", g_debugMain);
+   LOG_DEBUG("📌 EXECUTION - All 9 checks passed", g_debugMain);
    
    if(g_dashboard != NULL)
-      g_dashboard.SetCheckPending(5, "Executing trade...");
+      g_dashboard.SetCheckPending(6, "Executing trade...");
    UpdateDashboard();
    
    // ─── DETERMINE TRADE DIRECTION ───
@@ -1192,7 +1253,7 @@ void CheckSignal()
    {
       LOG_DEBUG("❌ No trade direction", g_debugMain);
       if(g_dashboard != NULL)
-         g_dashboard.SetCheckFailed(5, "No trade direction");
+         g_dashboard.SetCheckFailed(6, "No trade direction");
       return;
    }
    
@@ -1235,11 +1296,12 @@ void CheckSignal()
    
    // ─── LOG TRADE SIGNAL ───
    LOG_TRADE("═══════════════════════════════════════════════════════════");
-   LOG_TRADE("✅✅✅ TRADE SIGNAL v4.0 ✅✅✅");
+   LOG_TRADE("✅✅✅ TRADE SIGNAL v4.1 ✅✅✅");
    LOG_TRADE("   Priority: " + IntegerToString(priority) + " (" + scenario + ")");
    LOG_TRADE("   Direction: " + direction + " | Strength: " + DoubleToString(strength, 1) + "%");
    if(isGolden) LOG_TRADE("   🟡 GOLDEN CROSS!");
    if(isDeath) LOG_TRADE("   ⚫ DEATH CROSS!");
+   LOG_TRADE("   Pullback: " + DoubleToString(pullbackPercent, 1) + "% near M5 MA89");
    LOG_TRADE("   Exhaustion: " + exhaustion.type + " (" + 
              DoubleToString(exhaustion.confidence, 0) + "%)");
    LOG_TRADE("   HTF Pattern: " + exhaustion.htfPattern);
@@ -1267,7 +1329,7 @@ void CheckSignal()
          if(g_dashboard != NULL)
          {
             string dirText = tradeSignal == 1 ? "BUY" : "SELL";
-            g_dashboard.SetCheckPassed(5, "SUCCESSFUL - " + dirText);
+            g_dashboard.SetCheckPassed(6, "SUCCESSFUL - " + dirText);
             g_dashboard.SetTradeExecuted();
          }
       }
@@ -1275,18 +1337,18 @@ void CheckSignal()
       {
          LOG_ERROR("❌❌❌ TRADE EXECUTION FAILED ❌❌❌");
          if(g_dashboard != NULL)
-            g_dashboard.SetCheckFailed(5, "Execution FAILED");
+            g_dashboard.SetCheckFailed(6, "Execution FAILED");
       }
    }
    else
    {
       LOG_DEBUG("⚠️ Trading disabled - Signal detected but not executed", g_debugMain);
       if(g_dashboard != NULL)
-         g_dashboard.SetCheckFailed(5, "Trading disabled");
+         g_dashboard.SetCheckFailed(6, "Trading disabled");
    }
    
    LOG_DEBUG("═══════════════════════════════════════════════════════════", g_debugMain);
-   LOG_DEBUG("🔍 CHECK SIGNAL COMPLETE - 8/8 PASSED", g_debugMain);
+   LOG_DEBUG("🔍 CHECK SIGNAL COMPLETE - 9/9 PASSED", g_debugMain);
    LOG_DEBUG("═══════════════════════════════════════════════════════════", g_debugMain);
    
    UpdateDashboard();

@@ -1,14 +1,14 @@
 //+------------------------------------------------------------------+
 //|                        TrendManager.mqh                          |
 //|                    Multi-TF Trend Detection + Crossover          |
-//|                    v4.02 - CROSSOVER OVERHAUL                   |
+//|                    v4.03 - ADDED MA89 PULLBACK METHODS          |
 //|                    ENTRY: M5 | TREND: M15 | CONTEXT: M1+H1      |
 //|                    FOCUS: M15 Stack + M5 Pullback to MA89       |
 //|                    LOGGING: ONLY ON CROSSOVERS                  |
 //|                    WEIGHTS: H1=10%, M15=40%, M5=35%, M1=15%    |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
-#property version "4.02"
+#property version "4.03"
 
 #include "../Utils/Logger.mqh"
 #include "../Headers/Structures.mqh"
@@ -19,7 +19,7 @@
 bool g_debugTrendManager = false;
 
 //+------------------------------------------------------------------+
-//| Trend Manager Class - v4.02 Crossover Overhaul                 |
+//| Trend Manager Class - v4.03 with MA89 Pullback Methods         |
 //+------------------------------------------------------------------+
 class CTrendManager
 {
@@ -83,9 +83,9 @@ private:
     double m_prevMA21_M5;
     double m_prevMA89_M5;
     double m_prevMA200_M5;
-    double m_prevPrice_M5;        // Added for M5 price cross detection
+    double m_prevPrice_M5;
     
-    // ═══ CROSSOVER STATE TRACKING (for logging only on changes) ═══
+    // ═══ CROSSOVER STATE TRACKING ═══
     bool m_lastLoggedM15_21_89_Bullish;
     bool m_lastLoggedM15_21_89_Bearish;
     bool m_lastLoggedM15_89_200_Bullish;
@@ -143,7 +143,7 @@ private:
     void UpdatePreviousValues();
     void InitLogState();
     
-    // ═══ NEW: CROSSOVER DETECTION METHODS (OVERHAULED) ═══
+    // ═══ CROSSOVER DETECTION METHODS ═══
     bool CheckM15TrendStack(ENUM_TREND_DIRECTION dir);
     bool CheckM5Pullback(ENUM_TREND_DIRECTION dir);
     void LogCrossings();
@@ -283,6 +283,15 @@ public:
     bool ShouldAllowM1Entry() { return ShouldAllowEntry(); }
     double GetM1TrendScore() { return GetEntryScore(); }
     string GetM1TrendLabel() { return GetEntryLabel(); }
+    
+    // ═══ NEW: MA89 GETTERS ═══
+    double GetMA89_Entry() const { return m_cacheMA89_M5; }     // M5 MA89
+    double GetMA89_Trend() const { return m_cacheMA89; }       // M15 MA89
+    
+    // ═══ NEW: PULLBACK NEAR MA89 CHECKS ═══
+    bool CheckPullbackNearMA89(double &pullbackPercent, double minPullback = 30.0, double maxDistancePips = 500);
+    bool HasValidPullbackToMA89(double minPullback = 30.0, double maxDistancePips = 500);
+    double GetPullbackFromMA89();
 };
 
 //=============================================================================
@@ -293,7 +302,7 @@ CTrendManager::CTrendManager(string symbol, ENUM_TIMEFRAMES trendTF,
                              ENUM_TIMEFRAMES contextTF1,
                              ENUM_TIMEFRAMES contextTF2)
 {
-    LOG_DEBUG("CTrendManager v4.02 constructor called", g_debugTrendManager);
+    LOG_DEBUG("CTrendManager v4.03 constructor called", g_debugTrendManager);
     
     m_symbol = (symbol == NULL) ? _Symbol : symbol;
     m_trendTF = (trendTF == PERIOD_CURRENT) ? PERIOD_M15 : trendTF;
@@ -362,7 +371,7 @@ CTrendManager::CTrendManager(string symbol, ENUM_TIMEFRAMES trendTF,
     ZeroMemory(m_lastCrossover);
     
     LOG_DEBUG("========================================", g_debugTrendManager);
-    LOG_DEBUG("TREND MANAGER v4.02 - CROSSOVER OVERHAUL", g_debugTrendManager);
+    LOG_DEBUG("TREND MANAGER v4.03 - MA89 PULLBACK METHODS", g_debugTrendManager);
     LOG_DEBUG("========================================", g_debugTrendManager);
     LOG_DEBUG("  Symbol: " + m_symbol, g_debugTrendManager);
     LOG_DEBUG("  Trend TF: " + EnumToString(m_trendTF) + " (Stack Check)", g_debugTrendManager);
@@ -372,6 +381,7 @@ CTrendManager::CTrendManager(string symbol, ENUM_TIMEFRAMES trendTF,
     LOG_DEBUG("  Weights: M1=15%, M5=35%, M15=40%, H1=10%", g_debugTrendManager);
     LOG_DEBUG("  Crossover Buffer: " + IntegerToString(m_crossoverBufferPips) + " pips", g_debugTrendManager);
     LOG_DEBUG("  Logging: ONLY on crossovers (efficient)", g_debugTrendManager);
+    LOG_DEBUG("  MA89 Pullback: 30% min, 500 pips max distance", g_debugTrendManager);
     LOG_DEBUG("========================================", g_debugTrendManager);
 }
 
@@ -382,6 +392,83 @@ CTrendManager::~CTrendManager()
 {
     LOG_DEBUG("CTrendManager destructor called", g_debugTrendManager);
     Shutdown();
+}
+
+//=============================================================================
+// ═══ NEW: PULLBACK NEAR MA89 CHECKS ═══
+//=============================================================================
+
+//+------------------------------------------------------------------+
+//| CHECK PULLBACK NEAR MA89                                         |
+//| Returns true if price is near MA89 with valid pullback          |
+//| @param pullbackPercent - Output: calculated pullback %          |
+//| @param minPullback - Minimum pullback % required (default 30%)  |
+//| @param maxDistancePips - Max distance from MA89 in pips         |
+//+------------------------------------------------------------------+
+bool CTrendManager::CheckPullbackNearMA89(double &pullbackPercent, double minPullback, double maxDistancePips)
+{
+    // Get current price and MA89 on M5 (entry timeframe)
+    double currentPrice = m_cachePrice_M5;
+    double ma89 = m_cacheMA89_M5;
+    
+    if(currentPrice == 0 || ma89 == 0) return false;
+    
+    // Check distance from MA89 in pips
+    double distancePips = MathAbs(currentPrice - ma89) / SymbolInfoDouble(m_symbol, SYMBOL_POINT);
+    if(distancePips > maxDistancePips) return false;
+    
+    // Get range high (for pullback calculation from MA89)
+    double rangeHigh = 0;
+    for(int i = 0; i < 5; i++)
+    {
+        double high = iHigh(m_symbol, m_entryTF, i);
+        if(high > rangeHigh) rangeHigh = high;
+    }
+    
+    // If price is below range high, calculate pullback
+    if(rangeHigh <= ma89) return false;
+    
+    double range = rangeHigh - ma89;
+    pullbackPercent = ((rangeHigh - currentPrice) / range) * 100;
+    pullbackPercent = MathMax(0, MathMin(100, pullbackPercent));
+    
+    // Check if pullback meets minimum requirement
+    return (pullbackPercent >= minPullback);
+}
+
+//+------------------------------------------------------------------+
+//| HAS VALID PULLBACK TO MA89 (Simplified)                         |
+//| Returns true if there's a valid pullback near MA89             |
+//+------------------------------------------------------------------+
+bool CTrendManager::HasValidPullbackToMA89(double minPullback, double maxDistancePips)
+{
+    double pullbackPercent = 0;
+    return CheckPullbackNearMA89(pullbackPercent, minPullback, maxDistancePips);
+}
+
+//+------------------------------------------------------------------+
+//| GET PULLBACK PERCENTAGE FROM MA89                               |
+//| Returns the current pullback percentage from MA89              |
+//+------------------------------------------------------------------+
+double CTrendManager::GetPullbackFromMA89()
+{
+    double currentPrice = m_cachePrice_M5;
+    double ma89 = m_cacheMA89_M5;
+    
+    if(currentPrice == 0 || ma89 == 0) return 0;
+    
+    double rangeHigh = 0;
+    for(int i = 0; i < 5; i++)
+    {
+        double high = iHigh(m_symbol, m_entryTF, i);
+        if(high > rangeHigh) rangeHigh = high;
+    }
+    
+    if(rangeHigh <= ma89) return 0;
+    
+    double range = rangeHigh - ma89;
+    double pullback = ((rangeHigh - currentPrice) / range) * 100;
+    return MathMax(0, MathMin(100, pullback));
 }
 
 //=============================================================================
@@ -401,7 +488,7 @@ void CTrendManager::InitLogState()
 }
 
 //=============================================================================
-// CREATE HANDLES (Unchanged)
+// CREATE HANDLES
 //=============================================================================
 void CTrendManager::CreateHandles()
 {
@@ -462,7 +549,7 @@ void CTrendManager::CreateHandles()
 }
 
 //=============================================================================
-// RELEASE HANDLES (Unchanged)
+// RELEASE HANDLES
 //=============================================================================
 void CTrendManager::ReleaseHandles()
 {
@@ -494,7 +581,7 @@ void CTrendManager::ReleaseHandles()
 }
 
 //=============================================================================
-// SET CROSSOVER BUFFER (Unchanged)
+// SET CROSSOVER BUFFER
 //=============================================================================
 void CTrendManager::SetCrossoverBuffer(int pips)
 {
@@ -504,7 +591,7 @@ void CTrendManager::SetCrossoverBuffer(int pips)
 }
 
 //=============================================================================
-// SET WEIGHTS (Unchanged)
+// SET WEIGHTS
 //=============================================================================
 void CTrendManager::SetWeights(double m1, double m5, double m15, double h1)
 {
@@ -523,7 +610,7 @@ void CTrendManager::SetWeights(double m1, double m5, double m15, double h1)
 }
 
 //=============================================================================
-// SET THRESHOLDS (Unchanged)
+// SET THRESHOLDS
 //=============================================================================
 void CTrendManager::SetThresholds(double strong, double moderate, double weak, 
                                   double minConf, int slopePeriods)
@@ -536,7 +623,7 @@ void CTrendManager::SetThresholds(double strong, double moderate, double weak,
 }
 
 //=============================================================================
-// GET MA VALUE (Unchanged)
+// GET MA VALUE
 //=============================================================================
 double CTrendManager::GetMAValue(int handle, int shift)
 {
@@ -565,7 +652,7 @@ double CTrendManager::GetMAValue(int handle, int shift)
 }
 
 //=============================================================================
-// CHECK NEW BAR (Unchanged)
+// CHECK NEW BAR
 //=============================================================================
 bool CTrendManager::IsNewBar(ENUM_TIMEFRAMES tf, datetime &lastTime)
 {
@@ -581,7 +668,7 @@ bool CTrendManager::IsNewBar(ENUM_TIMEFRAMES tf, datetime &lastTime)
 }
 
 //=============================================================================
-// UPDATE CACHE (Unchanged)
+// UPDATE CACHE
 //=============================================================================
 void CTrendManager::UpdateCache(ENUM_TIMEFRAMES tf)
 {
@@ -627,7 +714,7 @@ void CTrendManager::UpdateCache(ENUM_TIMEFRAMES tf)
 }
 
 //=============================================================================
-// UPDATE PREVIOUS VALUES (Unchanged)
+// UPDATE PREVIOUS VALUES
 //=============================================================================
 void CTrendManager::UpdatePreviousValues()
 {
@@ -646,7 +733,7 @@ void CTrendManager::UpdatePreviousValues()
 }
 
 //=============================================================================
-// CALCULATE MA SLOPE (Unchanged)
+// CALCULATE MA SLOPE
 //=============================================================================
 double CTrendManager::CalculateMASlope(ENUM_TIMEFRAMES tf, int maPeriod, int periods)
 {
@@ -696,7 +783,7 @@ double CTrendManager::CalculateMASlope(ENUM_TIMEFRAMES tf, int maPeriod, int per
 }
 
 //=============================================================================
-// CHECK PRICE ABOVE MA (Unchanged)
+// CHECK PRICE ABOVE MA
 //=============================================================================
 bool CTrendManager::CheckPriceAboveMA(double price, double maValue)
 {
@@ -705,7 +792,7 @@ bool CTrendManager::CheckPriceAboveMA(double price, double maValue)
 }
 
 //=============================================================================
-// CHECK MA STACKING (Unchanged)
+// CHECK MA STACKING
 //=============================================================================
 bool CTrendManager::CheckMAStacking(double ma21, double ma89, double ma200)
 {
@@ -714,7 +801,7 @@ bool CTrendManager::CheckMAStacking(double ma21, double ma89, double ma200)
 }
 
 //=============================================================================
-// GET STATE NAME (Unchanged)
+// GET STATE NAME
 //=============================================================================
 string CTrendManager::GetStateName(ENUM_CROSS_STATE state)
 {
@@ -730,7 +817,7 @@ string CTrendManager::GetStateName(ENUM_CROSS_STATE state)
 }
 
 //=============================================================================
-// ═══ NEW: CHECK M15 TREND STACK ═══
+// CHECK M15 TREND STACK
 //=============================================================================
 bool CTrendManager::CheckM15TrendStack(ENUM_TREND_DIRECTION dir)
 {
@@ -769,7 +856,7 @@ bool CTrendManager::CheckM15TrendStack(ENUM_TREND_DIRECTION dir)
 }
 
 //=============================================================================
-// ═══ NEW: CHECK M5 PULLBACK ═══
+// CHECK M5 PULLBACK
 //=============================================================================
 bool CTrendManager::CheckM5Pullback(ENUM_TREND_DIRECTION dir)
 {
@@ -805,7 +892,7 @@ bool CTrendManager::CheckM5Pullback(ENUM_TREND_DIRECTION dir)
 }
 
 //=============================================================================
-// ═══ NEW: LOG CROSSINGS (ONLY ON VALID SIGNALS) ═══
+// LOG CROSSINGS
 //=============================================================================
 void CTrendManager::LogCrossings()
 {
@@ -935,7 +1022,7 @@ void CTrendManager::LogCrossings()
 }
 
 //=============================================================================
-// ═══ NEW: DETECT CROSSOVER ENHANCED ═══
+// DETECT CROSSOVER ENHANCED
 //=============================================================================
 SCrossoverResult CTrendManager::DetectCrossoverEnhanced()
 {
@@ -1019,7 +1106,7 @@ SCrossoverResult CTrendManager::DetectCrossoverEnhanced()
     result.allBearish = m15Bearish && (m5Bearish || result.m5_21_89_justCrossed);
     result.isDivergence = (m15Bullish && m5Bearish) || (m15Bearish && m5Bullish);
     
-    // ─── NEW: CHECK M15 STACK + M5 PULLBACK ───
+    // ─── CHECK M15 STACK + M5 PULLBACK ───
     bool m15StackValid = false;
     string stackDirection = "";
     
@@ -1057,7 +1144,7 @@ SCrossoverResult CTrendManager::DetectCrossoverEnhanced()
         }
     }
     
-    // ─── DETERMINE SCENARIO (NEW PRIORITY SYSTEM) ───
+    // ─── DETERMINE SCENARIO ───
     result.scenarioNumber = 0;
     result.scenarioName = "WAIT";
     result.priority = 6;
@@ -1065,7 +1152,6 @@ SCrossoverResult CTrendManager::DetectCrossoverEnhanced()
     // ─── BULLISH SCENARIOS ───
     if(m15StackValid && stackDirection == "BULLISH" && m5PullbackValid && pullbackDirection == "BULLISH")
     {
-        // STRONG BUY: M15 Stacked + M5 Price at MA89
         if(result.m1_position == "ABOVE" || result.m1_position == "NEAR")
         {
             result.scenarioNumber = 1;
@@ -1081,7 +1167,6 @@ SCrossoverResult CTrendManager::DetectCrossoverEnhanced()
     }
     else if(m15StackValid && stackDirection == "BULLISH" && !m5PullbackValid)
     {
-        // TREND VALID BUT PRICE NOT AT MA89 - WATCH
         result.scenarioNumber = 13;
         result.scenarioName = "WATCH_BULLISH";
         result.priority = 4;
@@ -1090,7 +1175,6 @@ SCrossoverResult CTrendManager::DetectCrossoverEnhanced()
     // ─── BEARISH SCENARIOS ───
     else if(m15StackValid && stackDirection == "BEARISH" && m5PullbackValid && pullbackDirection == "BEARISH")
     {
-        // STRONG SELL: M15 Stacked + M5 Price at MA89
         if(result.m1_position == "BELOW" || result.m1_position == "NEAR")
         {
             result.scenarioNumber = 22;
@@ -1106,7 +1190,6 @@ SCrossoverResult CTrendManager::DetectCrossoverEnhanced()
     }
     else if(m15StackValid && stackDirection == "BEARISH" && !m5PullbackValid)
     {
-        // TREND VALID BUT PRICE NOT AT MA89 - WATCH
         result.scenarioNumber = 14;
         result.scenarioName = "WATCH_BEARISH";
         result.priority = 4;
@@ -1135,7 +1218,7 @@ SCrossoverResult CTrendManager::DetectCrossoverEnhanced()
 }
 
 //=============================================================================
-// GET CROSSOVER STATE (Unchanged)
+// GET CROSSOVER STATE
 //=============================================================================
 ENUM_CROSS_STATE CTrendManager::GetCrossoverState(double ma1, double ma2)
 {
@@ -1154,7 +1237,7 @@ ENUM_CROSS_STATE CTrendManager::GetCrossoverState(double ma1, double ma2)
 }
 
 //=============================================================================
-// JUST CROSSED (Unchanged)
+// JUST CROSSED
 //=============================================================================
 bool CTrendManager::JustCrossed(double ma1, double ma2, double prevMA1, double prevMA2)
 {
@@ -1165,7 +1248,7 @@ bool CTrendManager::JustCrossed(double ma1, double ma2, double prevMA1, double p
 }
 
 //=============================================================================
-// GET FALLBACK TREND (Unchanged)
+// GET FALLBACK TREND
 //=============================================================================
 STrendResult CTrendManager::GetFallbackTrend()
 {
@@ -1323,7 +1406,7 @@ SMarketFeatures CTrendManager::ExtractFeatures()
 }
 
 //=============================================================================
-// CALCULATE CONFIDENCE (Unchanged)
+// CALCULATE CONFIDENCE
 //=============================================================================
 double CTrendManager::CalculateConfidence(SMarketFeatures &features)
 {
@@ -1367,7 +1450,7 @@ double CTrendManager::CalculateConfidence(SMarketFeatures &features)
 }
 
 //=============================================================================
-// CALCULATE ALIGNMENT (Unchanged)
+// CALCULATE ALIGNMENT
 //=============================================================================
 double CTrendManager::CalculateAlignment(SMarketFeatures &features)
 {
@@ -1394,7 +1477,7 @@ double CTrendManager::CalculateAlignment(SMarketFeatures &features)
 }
 
 //=============================================================================
-// CALCULATE MOMENTUM (Unchanged)
+// CALCULATE MOMENTUM
 //=============================================================================
 double CTrendManager::CalculateMomentum(SMarketFeatures &features)
 {
@@ -1410,7 +1493,7 @@ double CTrendManager::CalculateMomentum(SMarketFeatures &features)
 }
 
 //=============================================================================
-// CALCULATE PULLBACK DEPTH (Unchanged)
+// CALCULATE PULLBACK DEPTH
 //=============================================================================
 double CTrendManager::CalculatePullbackDepth(SMarketFeatures &features)
 {
@@ -1432,7 +1515,7 @@ double CTrendManager::CalculatePullbackDepth(SMarketFeatures &features)
 }
 
 //=============================================================================
-// CALCULATE TREND DURATION (Unchanged)
+// CALCULATE TREND DURATION
 //=============================================================================
 double CTrendManager::CalculateTrendDuration(SMarketFeatures &features)
 {
@@ -1458,7 +1541,7 @@ double CTrendManager::CalculateTrendDuration(SMarketFeatures &features)
 }
 
 //=============================================================================
-// CALCULATE VOLATILITY (Unchanged)
+// CALCULATE VOLATILITY
 //=============================================================================
 double CTrendManager::CalculateVolatility(SMarketFeatures &features)
 {
@@ -1549,7 +1632,7 @@ STrendRecommendation CTrendManager::MakeDecision(SMarketFeatures &features)
 }
 
 //=============================================================================
-// CALCULATE POSITION SIZE (Unchanged)
+// CALCULATE POSITION SIZE
 //=============================================================================
 double CTrendManager::CalculatePositionSize(SMarketFeatures &features)
 {
@@ -1583,7 +1666,7 @@ double CTrendManager::CalculatePositionSize(SMarketFeatures &features)
 }
 
 //=============================================================================
-// GET TIMING (Unchanged)
+// GET TIMING
 //=============================================================================
 string CTrendManager::GetTiming(double momentum)
 {
@@ -1594,7 +1677,7 @@ string CTrendManager::GetTiming(double momentum)
 }
 
 //=============================================================================
-// GET RISK LEVEL (Unchanged)
+// GET RISK LEVEL
 //=============================================================================
 string CTrendManager::GetRiskLevel(double volatility)
 {
@@ -1605,7 +1688,7 @@ string CTrendManager::GetRiskLevel(double volatility)
 }
 
 //=============================================================================
-// GET CONFIDENCE LEVEL (Unchanged)
+// GET CONFIDENCE LEVEL
 //=============================================================================
 string CTrendManager::GetConfidenceLevel(double confidence)
 {
@@ -1615,7 +1698,7 @@ string CTrendManager::GetConfidenceLevel(double confidence)
 }
 
 //=============================================================================
-// GENERATE PRIMARY REASON (Unchanged)
+// GENERATE PRIMARY REASON
 //=============================================================================
 string CTrendManager::GeneratePrimaryReason(SMarketFeatures &features, STrendRecommendation &rec)
 {
@@ -1657,7 +1740,7 @@ string CTrendManager::GeneratePrimaryReason(SMarketFeatures &features, STrendRec
 }
 
 //=============================================================================
-// GENERATE SECONDARY REASONS (Unchanged)
+// GENERATE SECONDARY REASONS
 //=============================================================================
 void CTrendManager::GenerateSecondaryReasons(SMarketFeatures &features, STrendRecommendation &rec)
 {
@@ -1701,7 +1784,7 @@ void CTrendManager::GenerateSecondaryReasons(SMarketFeatures &features, STrendRe
 }
 
 //=============================================================================
-// GENERATE FULL NARRATIVE (Unchanged)
+// GENERATE FULL NARRATIVE
 //=============================================================================
 string CTrendManager::GenerateFullNarrative(SMarketFeatures &features, STrendRecommendation &rec)
 {
@@ -1735,7 +1818,7 @@ string CTrendManager::GenerateFullNarrative(SMarketFeatures &features, STrendRec
 }
 
 //=============================================================================
-// GET REJECTION REASON (Unchanged)
+// GET REJECTION REASON
 //=============================================================================
 string CTrendManager::GetRejectionReason(SMarketFeatures &features)
 {
@@ -1795,7 +1878,7 @@ string CTrendManager::GetRejectionReason(SMarketFeatures &features)
 }
 
 //=============================================================================
-// ═══ PRIMARY ANALYSIS - AnalyzeTrend v4.02 ═══
+// ═══ PRIMARY ANALYSIS - AnalyzeTrend v4.03 ═══
 //=============================================================================
 STrendResult CTrendManager::AnalyzeTrend()
 {
@@ -2046,7 +2129,7 @@ void CTrendManager::AnalyzeFull(SMarketFeatures &features, STrendRecommendation 
 }
 
 //=============================================================================
-// GENERATE NARRATIVE (Unchanged)
+// GENERATE NARRATIVE
 //=============================================================================
 string CTrendManager::GenerateNarrative(const STrendResult &result)
 {
@@ -2092,7 +2175,7 @@ string CTrendManager::GenerateNarrative(const STrendResult &result)
 }
 
 //=============================================================================
-// QUICK ACCESS METHODS (Unchanged)
+// QUICK ACCESS METHODS
 //=============================================================================
 string CTrendManager::GetDirection()
 {
@@ -2185,7 +2268,7 @@ string CTrendManager::GetEntryLabel()
 }
 
 //=============================================================================
-// TRADING FILTERS (Unchanged)
+// TRADING FILTERS
 //=============================================================================
 bool CTrendManager::ShouldAllowLongs()
 {
@@ -2243,7 +2326,7 @@ bool CTrendManager::ShouldAllowEntry()
 }
 
 //=============================================================================
-// M5 ENTRY METHODS (Unchanged)
+// M5 ENTRY METHODS
 //=============================================================================
 string CTrendManager::GetDirection_M5()
 {
@@ -2272,7 +2355,7 @@ bool CTrendManager::IsBullish_M5() { return GetDirection_M5() == "BULLISH"; }
 bool CTrendManager::IsBearish_M5() { return GetDirection_M5() == "BEARISH"; }
 
 //=============================================================================
-// INITIALIZE (Unchanged)
+// INITIALIZE
 //=============================================================================
 bool CTrendManager::Initialize()
 {
@@ -2319,18 +2402,19 @@ bool CTrendManager::Initialize()
         m_lastValidTime = TimeCurrent();
     }
     
-    LOG_INFO("TrendManager v4.02 initialized for " + m_symbol, g_debugTrendManager);
+    LOG_INFO("TrendManager v4.03 initialized for " + m_symbol, g_debugTrendManager);
     LOG_INFO("  Initial trend: " + m_lastResult.direction + " (Strength: " + 
              DoubleToString(m_lastResult.strength, 1) + "%)", g_debugTrendManager);
     LOG_INFO("  Entry Compatible: " + (IsEntryCompatible() ? "YES" : "NO"), g_debugTrendManager);
     LOG_INFO("  Crossover Buffer: " + IntegerToString(m_crossoverBufferPips) + " pips", g_debugTrendManager);
     LOG_INFO("  Weights: H1=10%, M15=40%, M5=35%, M1=15%", g_debugTrendManager);
+    LOG_INFO("  MA89 Pullback: 30% min, 500 pips max distance", g_debugTrendManager);
     
     return true;
 }
 
 //=============================================================================
-// SHUTDOWN (Unchanged)
+// SHUTDOWN
 //=============================================================================
 void CTrendManager::Shutdown()
 {
@@ -2340,7 +2424,7 @@ void CTrendManager::Shutdown()
 }
 
 //=============================================================================
-// REPORTS (Unchanged)
+// REPORTS
 //=============================================================================
 string CTrendManager::GetSummaryString()
 {
@@ -2368,12 +2452,13 @@ string CTrendManager::GetDetailedReport()
     
     AnalyzeTrend();
     
-    string report = "\n========== TREND ANALYSIS REPORT (v4.02) ==========\n";
+    string report = "\n========== TREND ANALYSIS REPORT (v4.03) ==========\n";
     report += "Symbol: " + m_symbol + "\n";
     report += "Timeframes: M15 (trend - 40%), M5 (entry - 35%), M1 (context - 15%), H1 (context - 10%)\n";
     report += "MAs: 21, 89, 200\n";
     report += "Weights: H1=10%, M15=40%, M5=35%, M1=15%\n";
     report += "Crossover Buffer: " + IntegerToString(m_crossoverBufferPips) + " pips\n";
+    report += "MA89 Pullback: 30% min, 500 pips max distance\n";
     report += "Initialized: " + (m_isInitialized ? "Yes" : "No") + "\n";
     report += "Has Valid Direction: " + (m_hasValidDirection ? "Yes" : "No") + "\n";
     report += "\n--- CURRENT TREND ---\n";
@@ -2396,6 +2481,7 @@ string CTrendManager::GetDetailedReport()
         report += "MA21: " + DoubleToString(m_cacheMA21_M5, _Digits) + "\n";
         report += "MA89: " + DoubleToString(m_cacheMA89_M5, _Digits) + "\n";
         report += "MA200: " + DoubleToString(m_cacheMA200_M5, _Digits) + "\n";
+        report += "Pullback from MA89: " + DoubleToString(GetPullbackFromMA89(), 1) + "%\n";
         
         report += "\n--- CROSSOVER STATUS ---\n";
         report += "M15 21 vs 89: " + GetStateName(m_lastCrossover.m15_21_89) + "\n";
@@ -2434,7 +2520,7 @@ string CTrendManager::GetFeaturesReport(SMarketFeatures &features)
 {
     string report = "";
     report += "\n═══════════════════════════════════════════\n";
-    report += "📊 FEATURE EXTRACTION REPORT (v4.02)\n";
+    report += "📊 FEATURE EXTRACTION REPORT (v4.03)\n";
     report += "───────────────────────────────────────────\n";
     report += StringFormat("M15: %s %.0f%% %s\n", features.m15.direction, features.m15.strength,
                           features.m15.maStacked ? "STACKED" : "CROSSED");
@@ -2462,7 +2548,7 @@ string CTrendManager::GetRecommendationReport(STrendRecommendation &rec)
 {
     string report = "";
     report += "\n═══════════════════════════════════════════\n";
-    report += "⚡ RECOMMENDATION REPORT (v4.02)\n";
+    report += "⚡ RECOMMENDATION REPORT (v4.03)\n";
     report += "───────────────────────────────────────────\n";
     report += StringFormat("Action:         %s\n", rec.action);
     report += StringFormat("Position Size:  %.2f lots\n", rec.positionSize);
@@ -2488,7 +2574,7 @@ string CTrendManager::GetCrossoverReport()
 {
     string report = "";
     report += "\n═══════════════════════════════════════════\n";
-    report += "🔄 CROSSOVER DETECTION REPORT (v4.02)\n";
+    report += "🔄 CROSSOVER DETECTION REPORT (v4.03)\n";
     report += "───────────────────────────────────────────\n";
     report += "M15 21 vs 89: " + GetStateName(m_lastCrossover.m15_21_89) + 
               (m_lastCrossover.m15_21_89_justCrossed ? " 🔥 JUST CROSSED!" : "") + "\n";
