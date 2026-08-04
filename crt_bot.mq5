@@ -64,7 +64,7 @@ bool g_debugComponent = false;
 bool g_debugPullback = false;
 bool g_debugSession = false;
 bool g_debugOrderBlock = false;
-bool g_debugCandle = true;
+bool g_debugCandle = false;
 
 // ============================================================
 // GLOBAL VARIABLES
